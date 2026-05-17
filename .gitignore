@@ -1,0 +1,18 @@
+# ROS2 / colcon
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+
+# VSCode
+.vscode/
+
+# Linux
+*.swp
+*~
+
+# ROS logs
+*.log
