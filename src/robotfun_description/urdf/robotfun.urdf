@@ -1,0 +1,151 @@
+<?xml version="1.0"?>
+<robot name="robotfun_description" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Materials -->
+  <material name="black">
+    <color rgba="0 0 0 1"/>
+  </material>
+
+  <material name="green">
+    <color rgba="0 1 0 1"/>
+  </material>
+
+
+  <material name="blue">
+    <color rgba="0 0 1 1"/>
+  </material>
+
+  <material name="red">
+    <color rgba="1 0 0 1"/>
+  </material>
+
+
+  <!-- Root link -->
+  <link name="base_footprint"/>
+
+  <!-- Base link -->
+  <link name="base_link_green">
+    <visual>
+      <geometry>
+        <cylinder radius="0.17" length="0.02"/> 
+  
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <material name="green"/>
+    </visual>
+  </link>
+
+
+
+  <!-- Right wheel -->
+  <link name="right_wheel_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.039" length="0.015"/> 
+      </geometry>
+      <origin rpy="1.57 0 0" xyz="0 0 0"/>
+      <material name="black"/>
+    </visual>
+  </link>
+
+  
+  <!-- Left wheel -->
+  <link name="left_wheel_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.039" length="0.015"/>
+      </geometry>
+      <origin rpy="1.57 0 0" xyz="0 0 0"/>
+      <material name="black"/>
+    </visual>
+  </link>
+
+    
+  <!-- CIRCULO AZUL  -->
+  <link name="blue_circle_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.05" length="0.02"/>
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <material name="blue"/>
+    </visual>
+  </link>
+
+
+
+  <!-- Cuadrado rojo derecha -->
+  <link name="box_red_right_link">
+    <visual>
+      <geometry>
+        <box size="0.04 0.04 0.01"/>
+      </geometry>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <material name="red"/>
+    </visual>
+  </link>
+
+
+
+  <!-- Cuadrado rojo izquierda -->
+  <link name="box_red_left_link">
+    <visual>
+      <geometry>
+        <box size="0.04 0.04 0.01"/>
+      </geometry>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <material name="red"/>
+    </visual>
+  </link>
+
+
+
+
+  <!-- Base footprint to base link -->
+  <joint name="base_footprint_to_base_link_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link_green"/>
+    <origin rpy="0 0 0" xyz="0 0 0.05"/>
+  </joint>
+
+  <!-- Right wheel joint -->
+  <joint name="base_link_to_right_wheel_link_joint" type="continuous">
+    <parent link="base_link_green"/>
+    <child link="right_wheel_link"/>
+    <origin rpy="0 0 0" xyz="0 -0.175 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- Left wheel joint -->
+  <joint name="base_link_to_left_wheel_link_joint" type="continuous">
+    <parent link="base_link_green"/>
+    <child link="left_wheel_link"/>
+    <origin rpy="0 0 0" xyz="0 0.175 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+
+  <!-- Blue circle joint -->
+  <joint name="base_link_to_blue_circle_link_joint" type="fixed">
+    <parent link="base_link_green"/>
+    <child link="blue_circle_link"/>
+    <origin rpy="0 0 0" xyz="0 0 0.025"/>
+  </joint>
+
+
+  <!-- Red box right joint -->
+  <joint name="base_link_to_box_red_right_link_joint" type="fixed">
+    <parent link="base_link_green"/>
+    <child link="box_red_right_link"/>
+    <origin rpy="0 0 0" xyz="0.13  0 -0.039 "/>    
+  </joint>
+
+
+  <!-- Red box left joint -->
+  <joint name="base_link_to_box_red_left_link_joint" type="fixed">
+    <parent link="base_link_green"/>
+    <child link="box_red_left_link"/>
+    <origin rpy="0 0 0" xyz="-0.13  0 -0.039 "/>    
+  </joint>
+
+</robot>
