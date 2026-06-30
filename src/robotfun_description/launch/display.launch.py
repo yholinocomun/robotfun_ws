@@ -19,6 +19,7 @@ from launch.substitutions import (
     Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression,
 )
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -39,8 +40,9 @@ def generate_launch_description():
         ["'robotfun_meshes.urdf.xacro' if '", model_cfg,
          "' == 'meshes' else 'robotfun.urdf.xacro'"])
     robot_description = {
-        "robot_description": Command(
-            ["xacro ", PathJoinSubstitution([pkg, "urdf", xacro_file])])
+        "robot_description": ParameterValue(
+            Command(["xacro ", PathJoinSubstitution([pkg, "urdf", xacro_file])]),
+            value_type=str)
     }
 
     rsp = Node(
