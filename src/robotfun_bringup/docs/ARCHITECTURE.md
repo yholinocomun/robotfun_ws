@@ -25,22 +25,23 @@ robotfun_firmware/      ESP32 micro-ROS (4 juntas + gripper; roll muerto a 90°)
 robotfun_bringup/       composition root (launch integradores) + docs
 ```
 
-## Modelo cinemático (DH estándar, medidas reales)
-`D1=0.1375  A2=0.1277  A3=0.12715  HAND=0.100` (m). HOME = juntas a 0 rad ⇒
-servos a 90° ⇒ `FK(HOME)` sitúa hombro/codo/muñeca en las posiciones del URDF
-(verificado) y el TCP en `[0.038, 0, 0.4865]`.
+## Modelo cinemático (DH estándar, brazo RECTO, medidas reales)
+`D1=0.1375  A2=0.1277  A3=0.125  HAND=0.12` (m; A3 y HAND medidos por el usuario).
+HOME = juntas a 0 rad ⇒ servos a 90° ⇒ brazo recto vertical ⇒ `FK(HOME)` →
+hombro (0,0,0.1375), codo (0,0,0.2652), muñeca (0,0,0.3902), **TCP (0,0,0.5102)**.
 
 | i | d_i | θ_i | α_i | a_i |
 |---|-----|-----|-----|-----|
 | 1 | D1 | q1 | +90° | 0 |
 | 2 | 0 | q2+90° | 0° | A2 |
-| 3 | 0 | q3−17.39° | 0° | A3 |
-| 4 | 0 | q4+17.39° | 0° | HAND |
+| 3 | 0 | q3 | 0° | A3 |
+| 4 | 0 | q4 | 0° | HAND |
 
 El URDF usa `axis="0 0 1"` (yaw) y `axis="0 -1 0"` (los 3 pitch); con ese signo
 reproduce exactamente la FK DH (ver `scripts/verify_kinematics.py`). Dos modelos
 sin conflicto, misma interfaz de juntas: `display.launch.py model:=primitives`
-(medidas reales, referencia de IK) y `model:=meshes` (piezas reales del CAD).
+(medidas reales, referencia de IK) y `model:=meshes` (piezas reales del CAD; el
+gripper real va fusionado a la muñeca, sin cubo).
 
 ## Cinemática inversa — métodos (de mejor a más general)
 Para 4 GDL la tarea es **posición (3) + ángulo de aproximación φ (1)** = 4 ecuaciones.

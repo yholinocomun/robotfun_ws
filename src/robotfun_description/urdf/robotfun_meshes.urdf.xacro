@@ -3,16 +3,17 @@
      robotfun_meshes.urdf.xacro  —  MODELO DE PIEZAS REALES (meshes del CAD)
      ===========================================================================
      Mismo esqueleto y MISMAS juntas (joint_1..joint_4) que el modelo de medidas
-     reales, pero con las PIEZAS REALES del robot (meshes de brazo_ws, ya limpio:
-     sin engranajes ni eslabón sobrante, escala uniforme 0.001). Sirve para ver
-     el robot tal cual es y comparar con el modelo primitivo (ambos se mueven
-     idéntico, los mueve el mismo /joint_states). Se monta el GRIPPER real
-     rescatado de twin_ws.
+     reales, pero con las PIEZAS REALES (meshes de brazo_ws). El gripper real
+     (twin_ws) se FUSIONA a link_4 (la muñeca/soporte) como un solo cuerpo: ya no
+     hay cubo ni piezas flotando.
 
-     CENTRADO de meshes: las STL vienen en un marco CAD global; el <visual> de
-     cada link compensa la traslación. Si alguna pieza se ve descentrada en XY,
-     ajusta su <origin> (ver scripts/mesh_bbox.py). El modelo primitivo es la
-     referencia cinemática exacta.
+     Se mueve con el mismo /joint_states que el modelo primitivo ⇒ cuando mandas
+     una pose a la IK, este modelo de hardware también se mueve.
+
+     CENTRADO: las STL vienen en un marco CAD global; el <origin> de cada <visual>
+     (en arm.macro.xacro) y el grip_z del gripper son el punto de partida. Si algo
+     se ve desfasado, ajústalo en RViz (ver scripts/mesh_bbox.py). El modelo
+     primitivo (model:=primitives) es la referencia cinemática exacta.
      ========================================================================== -->
 <robot name="robotfun_meshes" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -22,10 +23,7 @@
 
   <xacro:robotfun_arm use_mesh="true"/>
 
-  <!-- Gripper real (twin_ws) en el TCP. El offset es punto de partida: afínalo
-       en RViz si hace falta (ver README). -->
-  <xacro:gripper_mesh parent="tool0" grip_z="-0.03">
-    <origin xyz="0 0 0.0" rpy="0 0 0"/>
-  </xacro:gripper_mesh>
+  <!-- gripper real fusionado a la muñeca (un solo eslabón). Afina grip_z en RViz. -->
+  <xacro:gripper_mesh_fused parent="link_4" grip_z="-0.36"/>
 
 </robot>

@@ -17,30 +17,22 @@ un brazo antropomórfico clásico: **1 yaw + 3 pitch coplanares**. Esta estructu
 tiene **cinemática inversa ANALÍTICA cerrada** (ver `ik_solver`), lo más eficiente
 y exacto posible. El servo del roll se mantiene físicamente fijo a 90° (muerto).
 
-Medidas reales (del `brazo_ws` actualizado; URDF joint origins, metros)
-----------------------------------------------------------------------
-    joint1 yaw   z=0.0617
-    joint2 pitch z=0.0758   (hombro a z=0.1375 sobre el eje de yaw)
-    joint3 pitch z=0.1277   (codo)
-    joint4 pitch (0.038, 0, 0.1213)  (muñeca, con un pequeño offset radial real)
-
-De ahí salen las longitudes:
-    D1   = 0.1375                 base -> eje de pitch del hombro
-    A2   = 0.1277                 hombro -> codo (brazo)
-    A3   = hypot(0.038, 0.1213)   codo -> muñeca (antebrazo) = 0.12715
-    HAND = 0.100                  muñeca -> TCP  (★ MEDIR en tu robot real)
+Medidas reales (brazo RECTO; metros). Las dos últimas medidas las dio el usuario:
+    D1   = 0.1375    base -> eje de pitch del hombro  (0.0617 + 0.0758)
+    A2   = 0.1277    hombro -> codo (brazo)
+    A3   = 0.125     codo -> muñeca (antebrazo)        ← medido
+    HAND = 0.120     muñeca -> punta del gripper (TCP) ← medido
 
 Tabla DH estándar (4 juntas). El vector q se SUMA al offset: θ_i = q_i + θoff_i.
 
-    i | d_i | θ_i        | α_i  | a_i
-    --|-----|------------|------|------
-    1 | D1  | q1         | +90° | 0       (yaw; α=90 lleva el eje de pitch a horizontal)
-    2 | 0   | q2 + 90°   |  0°  | A2      (hombro)
-    3 | 0   | q3 − 17.39°|  0°  | A3      (codo; el offset absorbe el bend real)
-    4 | 0   | q4 + 17.39°|  0°  | HAND    (muñeca; en HOME la mano queda vertical)
+    i | d_i | θ_i      | α_i  | a_i
+    --|-----|----------|------|------
+    1 | D1  | q1       | +90° | 0       (yaw; α=90 lleva el eje de pitch a horizontal)
+    2 | 0   | q2 + 90° |  0°  | A2      (hombro)
+    3 | 0   | q3       |  0°  | A3      (codo)
+    4 | 0   | q4       |  0°  | HAND    (muñeca)
 
-HOME (q=0): brazo vertical, servos a 90°. FK(HOME) sitúa hombro/codo/muñeca en
-las posiciones del URDF (verificado) y el TCP en [0.038, 0, 0.1375+0.1277+...].
+HOME (q=0): brazo RECTO y vertical, servos a 90°. FK(HOME) → TCP = [0, 0, 0.5102].
 """
 
 from __future__ import annotations
@@ -56,18 +48,16 @@ pi = np.pi
 # ---------------------------------------------------------------------------
 # Medidas físicas reales (metros). Ajustar si re-mides el robot.
 # ---------------------------------------------------------------------------
-D1 = 0.0617 + 0.0758            # base -> eje de pitch del hombro (joint2)
-A2 = 0.1277                     # brazo  (hombro -> codo)
-_FX, _FZ = 0.038, 0.1213        # vector codo -> muñeca (offset radial real)
-A3 = float(np.hypot(_FX, _FZ))  # antebrazo (codo -> muñeca) = 0.12715
-HAND = 0.100                    # ★ muñeca -> TCP (punto de agarre). MEDIR.
+D1 = 0.0617 + 0.0758    # base -> eje de pitch del hombro (joint2)
+A2 = 0.1277             # brazo  (hombro -> codo)
+A3 = 0.125              # antebrazo (codo -> muñeca)  ← medido por el usuario
+HAND = 0.120            # muñeca -> punta del gripper (TCP)  ← medido por el usuario
 
-# Offsets θ para que q=0 == HOME del URDF (mano vertical).
-_ANG_FORE = float(np.arctan2(_FZ, _FX))     # ángulo del antebrazo desde +r (72.6°)
+# Offsets θ para que q=0 == HOME (brazo RECTO y vertical).
 TH1_OFF = 0.0
 TH2_OFF = pi / 2.0
-TH3_OFF = _ANG_FORE - pi / 2.0              # ≈ -17.39°
-TH4_OFF = pi / 2.0 - _ANG_FORE              # ≈ +17.39°
+TH3_OFF = 0.0
+TH4_OFF = 0.0
 
 #: Nombres canónicos (deben coincidir con el URDF y el firmware).
 ARM_JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4"]
@@ -182,10 +172,10 @@ def jacobian_position(q):
 if __name__ == "__main__":
     np.set_printoptions(suppress=True, precision=5)
     _, fr = ROBOT.fkine(np.zeros(N_JOINTS), return_frames=True)
-    print("FK(HOME) — comparación con el URDF (medidas reales):")
-    print("  hombro :", np.round(fr[0][:3, 3], 4), " URDF joint2 (0,0,0.1375)")
-    print("  codo   :", np.round(fr[1][:3, 3], 4), " URDF joint3 (0,0,0.2652)")
-    print("  muñeca :", np.round(fr[2][:3, 3], 4), " URDF joint4 (0.038,0,0.3865)")
-    print("  TCP    :", np.round(fr[3][:3, 3], 4))
+    print("FK(HOME) — brazo recto y vertical (medidas reales):")
+    print("  hombro :", np.round(fr[0][:3, 3], 4), " esperado (0,0,0.1375)")
+    print("  codo   :", np.round(fr[1][:3, 3], 4), " esperado (0,0,0.2652)")
+    print("  muñeca :", np.round(fr[2][:3, 3], 4), " esperado (0,0,0.3902)")
+    print("  TCP    :", np.round(fr[3][:3, 3], 4), " esperado (0,0,0.5102)")
     print(f"alcance máx desde el hombro = A2+A3+HAND = {A2 + A3 + HAND:.4f} m")
     print("θ offsets (deg):", np.round(np.degrees(ROBOT.theta_offset), 2))

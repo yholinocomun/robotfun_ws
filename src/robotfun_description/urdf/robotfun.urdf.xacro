@@ -2,13 +2,10 @@
 <!-- ============================================================================
      robotfun.urdf.xacro  —  MODELO DE MEDIDAS REALES (primitivas)
      ===========================================================================
-     Brazo 4 GDL (yaw + 3 pitch) + gripper, dibujado con PRIMITIVAS dimensionadas
-     a las medidas reales del robot. Comparte el esqueleto (juntas joint_1..joint_4)
-     con el modelo de meshes, y reproduce EXACTAMENTE la FK del núcleo
-     `robotfun_kinematics` (TF == FK). Es el modelo para VERIFICAR la cinemática
-     inversa. Incluye inertiales (preparado para Gazebo/MoveIt2).
-
-     Para ver las piezas reales del CAD:  display.launch.py model:=meshes
+     Brazo 4 GDL RECTO + gripper, con PRIMITIVAS dimensionadas a las medidas
+     reales (D1=0.1375 A2=0.1277 A3=0.125 HAND=0.12). Reproduce EXACTAMENTE la FK
+     del núcleo (TF == FK). Es el modelo para VERIFICAR el DH y la cinemática
+     inversa. Para ver las piezas reales:  display.launch.py model:=meshes
      ========================================================================== -->
 <robot name="robotfun" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -18,8 +15,9 @@
 
   <xacro:robotfun_arm use_mesh="false"/>
 
-  <xacro:gripper_primitive parent="tool0">
-    <origin xyz="0 0 0.006" rpy="0 0 0"/>
+  <!-- gripper de prueba (móvil) en la zona de la mano -->
+  <xacro:gripper_primitive parent="link_4">
+    <origin xyz="0 0 0.084" rpy="0 0 0"/>
   </xacro:gripper_primitive>
 
 </robot>
