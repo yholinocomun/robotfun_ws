@@ -76,6 +76,15 @@ en la singularidad central (r≈0, eje de yaw).
                 fk_check_node ─► /fk_pose (valida TF==FK)
 ```
 
+## Regla de UNA sola fuente de /joint_states (evita el temblor/bucle en RViz)
+RViz "salta" si dos nodos publican `/joint_states` a la vez. `bringup.launch.py`
+lo impide con el argumento `mode`, dejando una única fuente:
+- `mode:=sim` → **`joint_state_relay`** (ESP32 virtual): `/joint_command → /joint_states`.
+  Así el robot sigue a la IK sin hardware.
+- `mode:=gui` → `joint_state_publisher_gui` (sliders), sin cinemática.
+- `mode:=hardware` → el ESP32 publica `/joint_states` (relay y sliders apagados).
+No lanzar `display.launch.py` junto con `bringup` (duplicaría la fuente).
+
 ## Inconsistencias corregidas
 - En `twin_ws`, el URDF no coincidía con la DH actualizada → aquí el URDF
   reproduce la FK (TF==FK).

@@ -23,24 +23,48 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-## Ejecutar (sin hardware)
-```bash
-# Modelo de MEDIDAS REALES (primitivas) — para verificar la cinemática:
-ros2 launch robotfun_description display.launch.py
-# Modelo de PIEZAS REALES (meshes del CAD) — para ver tu hardware:
-ros2 launch robotfun_description display.launch.py model:=meshes
+## Ejecutar — usa SIEMPRE `bringup` con un `mode` (una sola fuente de /joint_states)
 
-# Sistema completo (descripción + cinemática), controlador IK directo:
-ros2 launch robotfun_bringup bringup.launch.py controller:=ik
-# Mandar un objetivo de pick (la pinza apunta abajo por defecto):
-ros2 topic pub /target_pose geometry_msgs/msg/Pose "{position: {x: 0.18, y: 0.0, z: 0.08}}" --once
-ros2 topic echo /fk_pose         # comprobar TF==FK
+> ⚠️ El temblor/bucle en RViz ocurre si dos nodos publican `/joint_states` a la vez.
+> Por eso **no** lances `display.launch.py` junto con `bringup`. Usa solo `bringup`
+> y cambia el `mode`. Cada modo tiene UNA sola fuente de `/joint_states`.
+
+```bash
+# (A) SIMULACIÓN: el robot sigue a la IK SIN hardware (relay = ESP32 virtual).
+ros2 launch robotfun_bringup bringup.launch.py mode:=sim model:=primitives
+#   en otra terminal, manda un objetivo ALCANZABLE (ver tabla abajo):
+ros2 topic pub /target_pose geometry_msgs/msg/Pose "{position: {x: 0.10, y: 0.0, z: 0.30}}" --once
+ros2 topic echo /fk_pose          # comprobar que coincide con el objetivo
+
+# Ver tus piezas reales moviéndose con la misma IK:
+ros2 launch robotfun_bringup bringup.launch.py mode:=sim model:=meshes
+
+# (B) SLIDERS manuales (sin cinemática), p. ej. para inspeccionar el modelo:
+ros2 launch robotfun_bringup bringup.launch.py mode:=gui model:=meshes
 ```
+
+### Objetivos alcanzables (brazo pequeño: alcance ≈ 0.35 m)
+La pinza recta **hacia abajo (−90°)** es muy exigente para este brazo; usa
+`approach_deg` mayor para llegar a más puntos:
+```bash
+# pinza horizontal (φ=0°): muchos puntos —
+ros2 launch robotfun_bringup bringup.launch.py mode:=sim approach_deg:=0.0
+ros2 topic pub /target_pose geometry_msgs/msg/Pose "{position: {x: 0.10, y: 0.0, z: 0.30}}" --once
+# pinza a −45°:
+ros2 launch robotfun_bringup bringup.launch.py mode:=sim approach_deg:=-45.0
+ros2 topic pub /target_pose geometry_msgs/msg/Pose "{position: {x: 0.20, y: 0.0, z: 0.15}}" --once
+# pinza abajo (−90°), solo puntos bajos y cercanos:
+ros2 topic pub /target_pose geometry_msgs/msg/Pose "{position: {x: 0.16, y: 0.0, z: 0.05}}" --once
+```
+Si ves `IK no resolvió ... fuera de límites/espacio de trabajo`, el objetivo no es
+alcanzable con ese ángulo: acércalo, súbelo, o usa un `approach_deg` mayor.
 
 ## Con hardware (ESP32)
 ```bash
+# 1) agente micro-ROS (el ESP32 será la fuente de /joint_states):
 ros2 launch robotfun_firmware microros_agent.launch.py dev:=/dev/ttyUSB0
-ros2 launch robotfun_bringup bringup.launch.py gui:=false controller:=ik
+# 2) bringup en modo hardware (sin relay ni sliders):
+ros2 launch robotfun_bringup bringup.launch.py mode:=hardware model:=meshes
 ```
 
 ## Verificar el núcleo (sin ROS)
