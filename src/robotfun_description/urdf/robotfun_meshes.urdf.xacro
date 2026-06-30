@@ -1,132 +1,31 @@
 <?xml version="1.0"?>
 <!-- ============================================================================
-     robotfun_meshes.urdf.xacro  —  MODELO DE MESHES REALES (reparado)
+     robotfun_meshes.urdf.xacro  —  MODELO DE PIEZAS REALES (meshes del CAD)
      ===========================================================================
-     Reparación del `brazo.urdf` original (brazo_ws) para visualizar las piezas
-     CAD reales del robot y COMPARARLAS con el modelo canónico de primitivas
-     (`robotfun.urdf.xacro`). Comparten la MISMA interfaz de juntas
-     (joint_1..joint_5 + gripper), por lo que el mismo /joint_states mueve ambos.
+     Mismo esqueleto y MISMAS juntas (joint_1..joint_4) que el modelo de medidas
+     reales, pero con las PIEZAS REALES del robot (meshes de brazo_ws, ya limpio:
+     sin engranajes ni eslabón sobrante, escala uniforme 0.001). Sirve para ver
+     el robot tal cual es y comparar con el modelo primitivo (ambos se mueven
+     idéntico, los mueve el mismo /joint_states). Se monta el GRIPPER real
+     rescatado de twin_ws.
 
-     Correcciones aplicadas frente al brazo.urdf original:
-       * Juntas renombradas joint1..joint5 → joint_1..joint_5 (consistencia con
-         el núcleo de cinemática y el firmware).
-       * Eliminados engranaje1/2_link y sus joints: referenciaban
-         Engranaje1.stl / Engranaje2.stl INEXISTENTES (rompían la carga) y usaban
-         rpy en GRADOS (URDF usa radianes). En su lugar se monta el gripper real
-         rescatado de twin_ws.
-       * Límites articulares saturados a ±90° (±1.5708), coherente con los servos
-         físicos y con el firmware.
-       * Meshes referenciadas desde robotfun_description/meshes/arm.
-
-     CENTRADO (pendiente de afinar en TU RViz): las STL están en un marco CAD
-     global común; el `<origin>` de cada <visual> solo compensa Z. Ejecuta
-     `scripts/mesh_bbox.py` y ajusta XY, o re-exporta los STL re-origenados.
-     El modelo PRIMITIVO es la referencia cinemática correcta (TF == FK).
+     CENTRADO de meshes: las STL vienen en un marco CAD global; el <visual> de
+     cada link compensa la traslación. Si alguna pieza se ve descentrada en XY,
+     ajusta su <origin> (ver scripts/mesh_bbox.py). El modelo primitivo es la
+     referencia cinemática exacta.
      ========================================================================== -->
 <robot name="robotfun_meshes" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <xacro:include filename="$(find robotfun_description)/urdf/common/materials.xacro"/>
+  <xacro:include filename="$(find robotfun_description)/urdf/common/arm.macro.xacro"/>
   <xacro:include filename="$(find robotfun_description)/urdf/common/gripper.macro.xacro"/>
 
-  <xacro:property name="lower" value="-1.5708"/>
-  <xacro:property name="upper" value="1.5708"/>
-  <xacro:property name="mesh" value="package://robotfun_description/meshes/arm"/>
+  <xacro:robotfun_arm use_mesh="true"/>
 
-  <!-- mundo / base (raíz 'world' igual que el modelo primitivo) -->
-  <link name="world"/>
-  <joint name="base_joint" type="fixed">
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <parent link="world"/><child link="base_link"/>
-  </joint>
-
-  <link name="base_link">
-    <inertial>
-      <mass value="1.0"/>
-      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
-    </inertial>
-    <visual>
-      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
-      <geometry><mesh filename="${mesh}/base_link.stl" scale="0.001 0.001 0.001"/></geometry>
-      <material name="black"/>
-    </visual>
-  </link>
-
-  <link name="eslabon1_link">
-    <visual>
-      <origin xyz="0.0 0.0 -0.0617" rpy="0.0 0.0 0.0"/>
-      <geometry><mesh filename="${mesh}/eslabon1_link.stl" scale="0.001 0.001 0.001"/></geometry>
-      <material name="white_grey"/>
-    </visual>
-  </link>
-  <joint name="joint_1" type="revolute">
-    <parent link="base_link"/><child link="eslabon1_link"/>
-    <origin xyz="0.0 0.0 0.0617" rpy="0.0 0.0 0.0"/>
-    <axis xyz="0 0 1"/>
-    <limit lower="${lower}" upper="${upper}" effort="10.0" velocity="1.0"/>
-  </joint>
-
-  <link name="eslabon2_link">
-    <visual>
-      <origin xyz="0.0 0.0 -0.1375" rpy="0.0 0.0 0.0"/>
-      <geometry><mesh filename="${mesh}/eslabon2_link.stl" scale="0.001 0.001 0.001"/></geometry>
-      <material name="white_grey"/>
-    </visual>
-  </link>
-  <joint name="joint_2" type="revolute">
-    <parent link="eslabon1_link"/><child link="eslabon2_link"/>
-    <origin xyz="0.0 0.0 0.0758" rpy="0.0 0.0 0.0"/>
-    <axis xyz="0 1 0"/>
-    <limit lower="${lower}" upper="${upper}" effort="10.0" velocity="1.0"/>
-  </joint>
-
-  <!-- eslabon3 / eslabon3_1: escala 0.0001 (exportados 10x); ver mesh_bbox.py -->
-  <link name="eslabon3_link">
-    <visual>
-      <origin xyz="0.0 0.0 -0.2652" rpy="0.0 0.0 0.0"/>
-      <geometry><mesh filename="${mesh}/eslabon3_link.stl" scale="0.0001 0.0001 0.0001"/></geometry>
-      <material name="white_grey"/>
-    </visual>
-  </link>
-  <joint name="joint_3" type="revolute">
-    <parent link="eslabon2_link"/><child link="eslabon3_link"/>
-    <origin xyz="0.0 0.0 0.1277" rpy="0.0 0.0 0.0"/>
-    <axis xyz="0 1 0"/>
-    <limit lower="${lower}" upper="${upper}" effort="10.0" velocity="1.0"/>
-  </joint>
-
-  <link name="eslabon3_1link">
-    <visual>
-      <origin xyz="0.0 0.0 -0.2652" rpy="0.0 0.0 0.0"/>
-      <geometry><mesh filename="${mesh}/eslabon3_1link.stl" scale="0.0001 0.0001 0.0001"/></geometry>
-      <material name="white_grey"/>
-    </visual>
-  </link>
-  <joint name="joint_4" type="revolute">
-    <parent link="eslabon3_link"/><child link="eslabon3_1link"/>
-    <origin xyz="0.00140 0.0 0.00140" rpy="0.0 0.0 0.0"/>
-    <axis xyz="0 0 1"/>
-    <limit lower="${lower}" upper="${upper}" effort="10.0" velocity="1.0"/>
-  </joint>
-
-  <link name="eslabon4_link">
-    <visual>
-      <origin xyz="-0.038 0.0 -0.3865" rpy="0.0 0.0 0.0"/>
-      <geometry><mesh filename="${mesh}/eslabon4_link.stl" scale="0.001 0.001 0.001"/></geometry>
-      <material name="black"/>
-    </visual>
-  </link>
-  <joint name="joint_5" type="revolute">
-    <parent link="eslabon3_1link"/><child link="eslabon4_link"/>
-    <origin xyz="0.038 0.0 0.1213" rpy="0.0 0.0 0.0"/>
-    <axis xyz="0 1 0"/>
-    <limit lower="${lower}" upper="${upper}" effort="10.0" velocity="1.0"/>
-  </joint>
-
-  <!-- ============ gripper real rescatado de twin_ws (canal 6) ============ -->
-  <!-- Sustituye los engranajes inexistentes del brazo.urdf original. El offset
-       de placement es un punto de partida: afínalo en RViz (ver README). -->
-  <xacro:gripper_mesh parent="eslabon4_link" grip_z="-0.40">
-    <origin xyz="0.038 0.0 0.1213" rpy="0 0 0"/>
+  <!-- Gripper real (twin_ws) en el TCP. El offset es punto de partida: afínalo
+       en RViz si hace falta (ver README). -->
+  <xacro:gripper_mesh parent="tool0" grip_z="-0.03">
+    <origin xyz="0 0 0.0" rpy="0 0 0"/>
   </xacro:gripper_mesh>
 
 </robot>

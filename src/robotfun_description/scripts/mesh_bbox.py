@@ -4,19 +4,13 @@
 mesh_bbox.py
 ============
 
-Herramienta de diagnóstico para CENTRAR las meshes reales del brazo en RViz.
+Diagnóstico para CENTRAR las piezas reales del brazo en RViz (modelo de meshes).
 
-Las STL del robot se exportaron en un MARCO CAD GLOBAL COMÚN (todas comparten la
-misma esquina máxima del bounding box), no re-origenadas por eslabón. El URDF de
-meshes (`robotfun_meshes.urdf.xacro`) solo compensa Z, por eso algunas piezas se
-ven descentradas en XY.
-
-Solución recomendada (cualquiera de las dos):
-  (A) Re-exportar cada STL desde el CAD con el origen en el eje de su junta.
-  (B) Afinar el `<origin xyz>` del <visual> de cada link en RViz.
-
-Este script imprime el bounding box y su centro (a la escala de cada malla) para
-guiar el ajuste manual del paso (B). NO modifica nada.
+Las STL se exportaron en un MARCO CAD GLOBAL común; el <visual> de cada link sólo
+compensa la traslación. Si alguna pieza se ve descentrada en XY, ajusta su
+`<origin xyz>` en `urdf/common/arm.macro.xacro` (rama use_mesh=true). Este script
+imprime el bounding box y su centro (a escala 0.001) para guiar ese ajuste.
+No modifica nada.
 
 Uso:  python3 mesh_bbox.py
 """
@@ -47,30 +41,24 @@ def bbox(path):
     return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
 
 
-# (mesh, escala usada en el xacro)
-ITEMS = [
-    ("base_link.stl", 0.001),
-    ("eslabon1_link.stl", 0.001),
-    ("eslabon2_link.stl", 0.001),
-    ("eslabon3_link.stl", 0.0001),
-    ("eslabon3_1link.stl", 0.0001),
-    ("eslabon4_link.stl", 0.001),
-]
+MESHES = ["base_link.stl", "eslabon1_link.stl", "eslabon2_link.stl",
+          "eslabon3_link.stl", "eslabon4_link.stl"]
+SCALE = 0.001
 
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     mesh_dir = os.path.join(here, "..", "meshes", "arm")
-    print(f"{'mesh':20s} {'escala':7s}  bbox_min(scaled)        centro_xy(scaled)")
-    for name, sc in ITEMS:
+    print(f"{'mesh':20s} bbox_min(scaled)        centro_xy(scaled)")
+    for name in MESHES:
         mn, mx = bbox(os.path.join(mesh_dir, name))
-        cx = (mn[0] + mx[0]) / 2 * sc
-        cy = (mn[1] + mx[1]) / 2 * sc
-        print(f"{name:20s} {sc:<7} "
-              f"({mn[0]*sc:+.3f},{mn[1]*sc:+.3f},{mn[2]*sc:+.3f})  ({cx:+.4f},{cy:+.4f})")
-    print("\nNota: estas meshes comparten un marco CAD global; NO las centres por")
-    print("bbox de forma independiente (rompe la alineación relativa). Ajusta el")
-    print("<origin> de cada <visual> en RViz, o re-exporta los STL desde el CAD.")
+        cx = (mn[0] + mx[0]) / 2 * SCALE
+        cy = (mn[1] + mx[1]) / 2 * SCALE
+        print(f"{name:20s} ({mn[0]*SCALE:+.3f},{mn[1]*SCALE:+.3f},{mn[2]*SCALE:+.3f})  "
+              f"({cx:+.4f},{cy:+.4f})")
+    print("\nAjusta el <origin xyz> de cada <visual> (use_mesh=true) en arm.macro.xacro")
+    print("para centrar la pieza sobre el eje de su junta. El modelo primitivo")
+    print("(model:=primitives) es la referencia cinemática exacta (TF == FK).")
 
 
 if __name__ == "__main__":
