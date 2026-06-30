@@ -4,18 +4,14 @@
 verify_kinematics.py
 ====================
 
-Comprueba que el esqueleto del URDF (orígenes reales de brazo_ws + ejes de los
-pitch en (0 -1 0)) reproduce EXACTAMENTE la cinemática directa DH del robot.
+Comprueba que el esqueleto del modelo PRIMITIVO (orígenes de la tabla DH del
+usuario + pitch en axis="0 -1 0") reproduce EXACTAMENTE la FK del núcleo.
 
-Es la justificación del diseño: el modelo de "medidas reales" y el de "piezas
-reales" comparten este esqueleto, por lo que ambos sirven para verificar la IK
-(TF == FK) y se mueven idénticos con el mismo /joint_states.
-
-Tabla DH 4 GDL (yaw + 3 pitch), brazo RECTO, medidas reales (m):
-    D1=0.1375  A2=0.1277  A3=0.125  HAND=0.12
+Tabla DH 4 GDL (yaw + 3 pitch), brazo RECTO con offset radial L0 (m):
+    L0=0.010  L1=0.063  L2=0.120  A3=L3+L4=0.120  HAND=L5=0.11
     i | d   | θ_i      | α_i  | a_i
-    1 | D1  | q1       | +90° | 0
-    2 | 0   | q2 + 90° |  0°  | A2
+    1 | L1  | q1       | +90° | L0
+    2 | 0   | q2 + 90° |  0°  | L2
     3 | 0   | q3       |  0°  | A3
     4 | 0   | q4       |  0°  | HAND
 
@@ -25,9 +21,9 @@ Uso:  python3 verify_kinematics.py
 import numpy as np
 
 pi = np.pi
-D1, A2, A3, HAND = 0.1375, 0.1277, 0.125, 0.12
+L0, L1, L2, A3, HAND = 0.010, 0.063, 0.120, 0.120, 0.11
 THOFF = np.array([0.0, pi / 2, 0.0, 0.0])
-D = np.array([D1, 0, 0, 0]); A = np.array([0, A2, A3, HAND]); AL = np.array([pi / 2, 0, 0, 0])
+D = np.array([L1, 0, 0, 0]); A = np.array([L0, L2, A3, HAND]); AL = np.array([pi / 2, 0, 0, 0])
 
 
 def dh(d, th, a, al):
@@ -57,19 +53,18 @@ def Ry(a):
 
 
 def fk_urdf(q):
-    # esqueleto del URDF (recto): joint_1 axis z, joint_2/3/4 axis (0 -1 0)
-    return (T([0, 0, 0.0617]) @ Rz(q[0]) @ T([0, 0, 0.0758]) @ Ry(-q[1])
-            @ T([0, 0, 0.1277]) @ Ry(-q[2]) @ T([0, 0, 0.125]) @ Ry(-q[3])
-            @ T([0, 0, HAND]))
+    # esqueleto del modelo primitivo: joint_1 axis z; joint_2 con offset (L0,0,L1)
+    return (Rz(q[0]) @ T([L0, 0, L1]) @ Ry(-q[1]) @ T([0, 0, L2]) @ Ry(-q[2])
+            @ T([0, 0, A3]) @ Ry(-q[3]) @ T([0, 0, HAND]))
 
 
 def main():
     rng = np.random.default_rng(0)
     err = max(np.linalg.norm(fk_urdf(q)[:3, 3] - fk_dh(q)[:3, 3])
               for q in rng.uniform(-1.0, 1.0, (500, 4)))
-    print(f"Esqueleto URDF (ejes 0 0 1 / 0 -1 0) vs DH: err_max(500 q) = {err:.2e}")
-    print("→ coinciden: el URDF reproduce la FK DH (por eso usa axis='0 -1 0' en los pitch).")
-    print(f"FK(HOME) TCP = {np.round(fk_dh(np.zeros(4))[:3,3],4)}  (esperado [0,0,0.5102])")
+    print(f"Esqueleto primitivo (ejes 0 0 1 / 0 -1 0) vs DH: err_max(500 q) = {err:.2e}")
+    print("→ coinciden: el modelo primitivo reproduce la FK DH (verifica la IK).")
+    print(f"FK(HOME) TCP = {np.round(fk_dh(np.zeros(4))[:3,3],4)}  (esperado [0.010,0,0.413])")
 
 
 if __name__ == "__main__":

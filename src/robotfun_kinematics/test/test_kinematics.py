@@ -19,12 +19,12 @@ def test_n_joints_is_four():
 
 
 def test_fk_home_matches_urdf():
-    """FK(HOME=q0): brazo recto y vertical (medidas reales)."""
+    """FK(HOME=q0): brazo recto y vertical (tabla DH del usuario, L0..L5)."""
     _, fr = ROBOT.fkine(np.zeros(N_JOINTS), return_frames=True)
-    np.testing.assert_allclose(fr[0][:3, 3], [0.0, 0.0, 0.1375], atol=1e-4)   # hombro
-    np.testing.assert_allclose(fr[1][:3, 3], [0.0, 0.0, 0.2652], atol=1e-4)   # codo
-    np.testing.assert_allclose(fr[2][:3, 3], [0.0, 0.0, 0.3902], atol=1e-4)   # muñeca
-    np.testing.assert_allclose(fr[3][:3, 3], [0.0, 0.0, 0.5102], atol=1e-4)   # TCP
+    np.testing.assert_allclose(fr[0][:3, 3], [0.010, 0.0, 0.063], atol=1e-4)   # hombro
+    np.testing.assert_allclose(fr[1][:3, 3], [0.010, 0.0, 0.183], atol=1e-4)   # codo
+    np.testing.assert_allclose(fr[2][:3, 3], [0.010, 0.0, 0.303], atol=1e-4)   # muñeca
+    np.testing.assert_allclose(fr[3][:3, 3], [0.010, 0.0, 0.413], atol=1e-4)   # TCP
 
 
 def _reachable_front_targets(n, seed_rng=0):

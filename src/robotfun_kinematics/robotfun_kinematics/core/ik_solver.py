@@ -76,9 +76,10 @@ def _wrap(a: float) -> float:
     return (a + pi) % (2.0 * pi) - pi
 
 
-def _planar_2r(rw: float, zw: float, d1: float, a2: float, a3: float, elbow_up: bool):
-    """2R planar: hombro (0,d1) → muñeca (rw,zw). Devuelve (ang2_abs, ang3_abs) o None."""
-    dr, dz = rw, zw - d1
+def _planar_2r(rw: float, zw: float, sr: float, d1: float, a2: float, a3: float,
+               elbow_up: bool):
+    """2R planar: hombro (sr,d1) → muñeca (rw,zw). Devuelve (ang2_abs, ang3_abs) o None."""
+    dr, dz = rw - sr, zw - d1
     c3 = (dr * dr + dz * dz - a2 * a2 - a3 * a3) / (2.0 * a2 * a3)
     if c3 < -1.0 or c3 > 1.0:
         return None
@@ -102,11 +103,12 @@ def ik_analytic(x: float, y: float, z: float, phi: float,
     """
     d1, a2, a3, hand = (robot.shoulder_height, robot.link_upper,
                         robot.link_fore, robot.link_hand)
+    sr = robot.base_offset                       # offset radial del hombro (L0)
     q1 = np.arctan2(y, x)
     r = np.hypot(x, y)
     rw = r - hand * cos(phi)                     # muñeca en el plano (r, z)
     zw = z - hand * sin(phi)
-    planar = _planar_2r(rw, zw, d1, a2, a3, elbow_up)
+    planar = _planar_2r(rw, zw, sr, d1, a2, a3, elbow_up)
     if planar is None:
         return None
     ang2, ang3 = planar

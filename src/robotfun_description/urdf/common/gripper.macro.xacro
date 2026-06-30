@@ -44,34 +44,4 @@
     </link>
   </xacro:macro>
 
-  <!-- ===== MESH FUSIONADO (fijo) ===== -->
-  <!-- Une el gripper real al eslabón de la muñeca como UN solo cuerpo rígido.
-       grip_z desplaza la malla (marco CAD global de twin); afínalo en RViz. -->
-  <xacro:macro name="gripper_mesh_fused" params="parent grip_z:=-0.36">
-    <joint name="gripper_fixed" type="fixed">
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <parent link="${parent}"/><child link="gripper_link"/>
-    </joint>
-    <link name="gripper_link">
-      <inertial><mass value="0.04"/>
-        <inertia ixx="2e-5" ixy="0" ixz="0" iyy="2e-5" iyz="0" izz="2e-5"/></inertial>
-      <visual>
-        <origin xyz="0.0 0.008 ${grip_z}" rpy="0 0 0"/>
-        <geometry>
-          <mesh filename="package://robotfun_description/meshes/gripper/left_gripper.stl"
-                scale="0.001 0.001 0.001"/>
-        </geometry>
-        <material name="black"/>
-      </visual>
-      <visual>
-        <origin xyz="0.0 -0.008 ${grip_z}" rpy="0 0 0"/>
-        <geometry>
-          <mesh filename="package://robotfun_description/meshes/gripper/right_gripper.stl"
-                scale="0.001 0.001 0.001"/>
-        </geometry>
-        <material name="black"/>
-      </visual>
-    </link>
-  </xacro:macro>
-
 </robot>

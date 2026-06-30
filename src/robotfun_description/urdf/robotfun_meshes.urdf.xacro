@@ -2,28 +2,96 @@
 <!-- ============================================================================
      robotfun_meshes.urdf.xacro  —  MODELO DE PIEZAS REALES (meshes del CAD)
      ===========================================================================
-     Mismo esqueleto y MISMAS juntas (joint_1..joint_4) que el modelo de medidas
-     reales, pero con las PIEZAS REALES (meshes de brazo_ws). El gripper real
-     (twin_ws) se FUSIONA a link_4 (la muñeca/soporte) como un solo cuerpo: ya no
-     hay cubo ni piezas flotando.
+     Visualización del robot real con TUS piezas (meshes de brazo_ws, ya con
+     eslabon3 re-exportado y piezas unidas). Usa los orígenes de tu brazo.urdf
+     (donde las mallas están alineadas) y MISMAS juntas (joint_1..joint_4) que el
+     modelo primitivo, con los pitch en axis="0 -1 0" para que se muevan en el
+     mismo sentido. Lo mueve el mismo /joint_states ⇒ cuando mandas una pose a la
+     IK, este modelo de hardware también se mueve.
 
-     Se mueve con el mismo /joint_states que el modelo primitivo ⇒ cuando mandas
-     una pose a la IK, este modelo de hardware también se mueve.
+     Limpieza: SIN cubo y SIN el gripper flotante de twin (eliminado). El gripper
+     real es parte de eslabon4 (piezas unidas). tool0 es solo un frame.
 
-     CENTRADO: las STL vienen en un marco CAD global; el <origin> de cada <visual>
-     (en arm.macro.xacro) y el grip_z del gripper son el punto de partida. Si algo
-     se ve desfasado, ajústalo en RViz (ver scripts/mesh_bbox.py). El modelo
-     primitivo (model:=primitives) es la referencia cinemática exacta.
+     Nota: las proporciones vienen de tu brazo.urdf (CAD). El modelo PRIMITIVO
+     (model:=primitives) es la referencia exacta de la tabla DH para verificar la
+     cinemática. Si quieres que las mallas coincidan 1:1 con la DH, habría que
+     re-exportarlas a las longitudes L1..L5.
      ========================================================================== -->
 <robot name="robotfun_meshes" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <xacro:include filename="$(find robotfun_description)/urdf/common/materials.xacro"/>
-  <xacro:include filename="$(find robotfun_description)/urdf/common/arm.macro.xacro"/>
-  <xacro:include filename="$(find robotfun_description)/urdf/common/gripper.macro.xacro"/>
+  <xacro:property name="mesh" value="package://robotfun_description/meshes/arm"/>
+  <xacro:property name="lo" value="-1.5708"/>
+  <xacro:property name="hi" value="1.5708"/>
 
-  <xacro:robotfun_arm use_mesh="true"/>
+  <link name="world"/>
+  <joint name="base_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0 0"/><parent link="world"/><child link="base_link"/>
+  </joint>
 
-  <!-- gripper real fusionado a la muñeca (un solo eslabón). Afina grip_z en RViz. -->
-  <xacro:gripper_mesh_fused parent="link_4" grip_z="-0.36"/>
+  <link name="base_link">
+    <inertial><mass value="1.0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="${mesh}/base_link.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="grey"/>
+    </visual>
+  </link>
+
+  <joint name="joint_1" type="revolute">
+    <origin xyz="0 0 0.0617" rpy="0 0 0"/><parent link="base_link"/><child link="link_1"/>
+    <axis xyz="0 0 1"/><limit lower="${lo}" upper="${hi}" effort="10.0" velocity="1.5"/>
+  </joint>
+  <link name="link_1">
+    <visual>
+      <origin xyz="0 0 -0.0617" rpy="0 0 0"/>
+      <geometry><mesh filename="${mesh}/eslabon1_link.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="white_grey"/>
+    </visual>
+  </link>
+
+  <joint name="joint_2" type="revolute">
+    <origin xyz="0 0 0.0758" rpy="0 0 0"/><parent link="link_1"/><child link="link_2"/>
+    <axis xyz="0 -1 0"/><limit lower="${lo}" upper="${hi}" effort="10.0" velocity="1.5"/>
+  </joint>
+  <link name="link_2">
+    <visual>
+      <origin xyz="0 0 -0.1375" rpy="0 0 0"/>
+      <geometry><mesh filename="${mesh}/eslabon2_link.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="white_grey"/>
+    </visual>
+  </link>
+
+  <joint name="joint_3" type="revolute">
+    <origin xyz="0 0 0.1277" rpy="0 0 0"/><parent link="link_2"/><child link="link_3"/>
+    <axis xyz="0 -1 0"/><limit lower="${lo}" upper="${hi}" effort="10.0" velocity="1.5"/>
+  </joint>
+  <link name="link_3">
+    <visual>
+      <origin xyz="0 0 -0.2652" rpy="0 0 0"/>
+      <geometry><mesh filename="${mesh}/eslabon3_link.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="white_grey"/>
+    </visual>
+  </link>
+
+  <joint name="joint_4" type="revolute">
+    <origin xyz="0.038 0 0.1213" rpy="0 0 0"/><parent link="link_3"/><child link="link_4"/>
+    <axis xyz="0 -1 0"/><limit lower="${lo}" upper="${hi}" effort="10.0" velocity="1.5"/>
+  </joint>
+  <!-- link_4 = eslabon4 (muñeca + gripper unidos: un solo eslabón) -->
+  <link name="link_4">
+    <visual>
+      <origin xyz="-0.038 0 -0.3865" rpy="0 0 0"/>
+      <geometry><mesh filename="${mesh}/eslabon4_link.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="black"/>
+    </visual>
+  </link>
+
+  <!-- tool0 = TCP (punta del gripper, HAND≈0.11). Solo frame. -->
+  <joint name="tool_fixed" type="fixed">
+    <origin xyz="0 0 0.11" rpy="0 0 0"/><parent link="link_4"/><child link="tool0"/>
+  </joint>
+  <link name="tool0"/>
 
 </robot>

@@ -1,5 +1,5 @@
 # Posición inicial (HOME) del brazo 4 GDL: todas las juntas a 0 rad.
-# Coincide con los servos a 90° y con FK(HOME) → TCP = [0, 0, 0.5102] m (brazo recto).
+# Coincide con los servos a 90° y con FK(HOME) → TCP = [0.010, 0, 0.413] m (brazo recto).
 initial_positions:
   joint_1: 0.0
   joint_2: 0.0

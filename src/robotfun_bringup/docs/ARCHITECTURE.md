@@ -25,23 +25,25 @@ robotfun_firmware/      ESP32 micro-ROS (4 juntas + gripper; roll muerto a 90°)
 robotfun_bringup/       composition root (launch integradores) + docs
 ```
 
-## Modelo cinemático (DH estándar, brazo RECTO, medidas reales)
-`D1=0.1375  A2=0.1277  A3=0.125  HAND=0.12` (m; A3 y HAND medidos por el usuario).
-HOME = juntas a 0 rad ⇒ servos a 90° ⇒ brazo recto vertical ⇒ `FK(HOME)` →
-hombro (0,0,0.1375), codo (0,0,0.2652), muñeca (0,0,0.3902), **TCP (0,0,0.5102)**.
+## Modelo cinemático (tabla DH del usuario, brazo RECTO con offset base L0)
+`L0=0.010  L1=0.063  L2=0.120  A3=L3+L4=0.120  HAND=L5=0.11` (m). HOME = juntas a
+0 rad ⇒ servos a 90° ⇒ brazo recto vertical ⇒ `FK(HOME)` → hombro (0.010,0,0.063),
+codo (0.010,0,0.183), muñeca (0.010,0,0.303), **TCP (0.010,0,0.413)**.
 
 | i | d_i | θ_i | α_i | a_i |
 |---|-----|-----|-----|-----|
-| 1 | D1 | q1 | +90° | 0 |
-| 2 | 0 | q2+90° | 0° | A2 |
+| 1 | L1 | q1 | +90° | L0 |
+| 2 | 0 | q2+90° | 0° | L2 |
 | 3 | 0 | q3 | 0° | A3 |
 | 4 | 0 | q4 | 0° | HAND |
 
-El URDF usa `axis="0 0 1"` (yaw) y `axis="0 -1 0"` (los 3 pitch); con ese signo
-reproduce exactamente la FK DH (ver `scripts/verify_kinematics.py`). Dos modelos
-sin conflicto, misma interfaz de juntas: `display.launch.py model:=primitives`
-(medidas reales, referencia de IK) y `model:=meshes` (piezas reales del CAD; el
-gripper real va fusionado a la muñeca, sin cubo).
+El modelo PRIMITIVO usa `axis="0 0 1"` (yaw) y `axis="0 -1 0"` (los 3 pitch) y
+reproduce exactamente la FK DH (TF==FK, ver `scripts/verify_kinematics.py`): es la
+referencia para verificar la IK. El modelo de MESHES usa los orígenes del CAD
+(brazo.urdf, donde las piezas están alineadas) con las mismas juntas y sentidos
+de giro; sirve para visualizar el hardware (sus proporciones difieren ~12 cm del
+DH; ambos se mueven con el mismo /joint_states). Sin cubo ni piezas flotantes.
+`display.launch.py model:=primitives | meshes`.
 
 ## Cinemática inversa — métodos (de mejor a más general)
 Para 4 GDL la tarea es **posición (3) + ángulo de aproximación φ (1)** = 4 ecuaciones.

@@ -38,7 +38,7 @@ class WorkspaceLimits:
     z_min: float = 0.02       # altura mínima (superficie de la mesa, no bajar más)
     z_max: float = 0.45
     r_min: float = 0.08       # alcance mínimo desde el hombro (evita el cuerpo)
-    r_max: float = A2 + A3 + HAND   # alcance máximo físico (≈0.355 m)
+    r_max: float = A2 + A3 + HAND   # alcance máximo físico (≈0.35 m)
 
     def shoulder(self, robot: DHChain = ROBOT) -> np.ndarray:
         """Centro del hombro (pivote de los pitch) sobre el eje de yaw."""
