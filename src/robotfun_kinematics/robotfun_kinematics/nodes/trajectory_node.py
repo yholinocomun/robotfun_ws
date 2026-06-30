@@ -4,20 +4,18 @@
 trajectory_node.py
 ==================
 
-Control cinemático con PERFIL TRAPEZOIDAL (movimiento suave en lazo abierto).
+Control cinemático con PERFIL TRAPEZOIDAL (movimiento suave en lazo abierto)
+para el robot de 4 GDL + gripper.
 
 Dos modos:
-  1) ARTICULAR  : /joint_goal (Float32MultiArray [q1..q5, gripper]) → interpolación
+  1) ARTICULAR  : /joint_goal (Float32MultiArray [q1..q4, gripper]) → interpolación
                   trapezoidal sincronizada en el espacio articular.
   2) CARTESIANO : /target_pose (Pose) → recta cartesiana con perfil trapezoidal;
-                  en cada paso se integra  q += J^+(q)·dx  (control diferencial
-                  real con Jacobiano + pseudo-inversa amortiguada).
+                  en cada paso integra  q += J⁺(q)·dx  (control diferencial con
+                  pseudo-inversa amortiguada). Respeta el área de trabajo.
 
-Salida: /joint_command (Float32MultiArray) — stream fino [q1..q5, gripper] a
+Salida: /joint_command (Float32MultiArray) — stream fino [q1..q4, gripper] a
 ``control_rate`` Hz hacia el ESP32.
-
-Respeta la versión J4 fijo/activo vía el parámetro ``use_joint4`` (en cartesiano
-congela la columna de J4 igual que la IK).
 """
 
 import numpy as np
@@ -27,8 +25,9 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
 
-from robotfun_kinematics.core import ARM_JOINT_NAMES, N_JOINTS, ROBOT
-from robotfun_kinematics.core.ik_solver import ACTIVE_ALL, ACTIVE_J4_FIXED
+from robotfun_kinematics.core import (
+    ARM_JOINT_NAMES, N_JOINTS, ROBOT, WorkspaceLimits, clamp_target,
+)
 from robotfun_kinematics.core.trajectory import joint_trajectory, trapezoidal_profile
 
 
@@ -36,17 +35,15 @@ class TrajectoryNode(Node):
     def __init__(self):
         super().__init__("trajectory_node")
 
-        self.declare_parameter("control_rate", 50.0)   # Hz (fineza del stream)
-        self.declare_parameter("v_max", 0.6)           # rad/s
-        self.declare_parameter("a_max", 1.2)           # rad/s^2
-        self.declare_parameter("v_max_cart", 0.08)     # m/s
-        self.declare_parameter("a_max_cart", 0.15)     # m/s^2
-        self.declare_parameter("damping", 0.06)        # lambda DLS
-        self.declare_parameter("use_joint4", False)
+        self.declare_parameter("control_rate", 50.0)
+        self.declare_parameter("v_max", 0.6)
+        self.declare_parameter("a_max", 1.2)
+        self.declare_parameter("v_max_cart", 0.08)
+        self.declare_parameter("a_max_cart", 0.15)
+        self.declare_parameter("damping", 0.06)
 
         self.rate = float(self.get_parameter("control_rate").value)
-        self.use_joint4 = bool(self.get_parameter("use_joint4").value)
-        self.active_idx = np.where(ACTIVE_ALL if self.use_joint4 else ACTIVE_J4_FIXED)[0]
+        self.limits = WorkspaceLimits()
 
         self.q_arm = np.zeros(N_JOINTS)
         self.gripper = 0.0
@@ -61,9 +58,9 @@ class TrajectoryNode(Node):
         self.timer = self.create_timer(1.0 / self.rate, self.stream_cb)
 
         self.get_logger().info(
-            f"trajectory_node listo (trapezoidal) | use_joint4={self.use_joint4}.\n"
+            "trajectory_node (4 GDL) listo (trapezoidal).\n"
             "  articular : ros2 topic pub /joint_goal std_msgs/msg/Float32MultiArray "
-            "\"{data: [q1,q2,q3,q4,q5,gripper]}\"\n"
+            "\"{data: [q1,q2,q3,q4,gripper]}\"\n"
             "  cartesiano: ros2 topic pub /target_pose geometry_msgs/msg/Pose ...")
 
     def joint_state_cb(self, msg: JointState):
@@ -76,29 +73,24 @@ class TrajectoryNode(Node):
                 self.gripper = name_to_pos["gripper"]
             self.have_feedback = True
 
-    # MODO ARTICULAR ----------------------------------------------------------
     def joint_goal_cb(self, msg: Float32MultiArray):
         data = list(msg.data)
         if len(data) < N_JOINTS:
-            self.get_logger().warn("Se requieren al menos 5 ángulos.")
+            self.get_logger().warn(f"Se requieren al menos {N_JOINTS} ángulos.")
             return
         q_goal = ROBOT.clamp(np.array(data[:N_JOINTS]))
         grip_goal = float(data[N_JOINTS]) if len(data) > N_JOINTS else self.gripper
-
         v_max = float(self.get_parameter("v_max").value)
         a_max = float(self.get_parameter("a_max").value)
-
         q0 = np.hstack((self.q_arm, self.gripper))
         qg = np.hstack((q_goal, grip_goal))
         self.traj = joint_trajectory(q0, qg, v_max, a_max, self.rate)
         self.traj_idx = 0
         self.get_logger().info(
-            f"[ARTICULAR] {len(self.traj)} pasos, "
-            f"duración={len(self.traj)/self.rate:.2f} s")
+            f"[ARTICULAR] {len(self.traj)} pasos, duración={len(self.traj)/self.rate:.2f} s")
 
-    # MODO CARTESIANO (control diferencial) -----------------------------------
     def pose_goal_cb(self, msg: Pose):
-        x_goal = np.array([msg.position.x, msg.position.y, msg.position.z])
+        x_goal = clamp_target([msg.position.x, msg.position.y, msg.position.z], self.limits)
         v_max = float(self.get_parameter("v_max_cart").value)
         a_max = float(self.get_parameter("a_max_cart").value)
         lam2 = float(self.get_parameter("damping").value) ** 2
@@ -112,20 +104,17 @@ class TrajectoryNode(Node):
         s_prev = 0.0
         for s in s_list:
             dx = (x0 + s * (x_goal - x0)) - (x0 + s_prev * (x_goal - x0))
-            J = ROBOT.jacobian_position(q)[:, self.active_idx]   # columnas activas
+            J = ROBOT.jacobian_position(q)              # 3 x 4
             dq = J.T @ np.linalg.solve(J @ J.T + lam2 * np.eye(3), dx)
-            q[self.active_idx] += dq
-            q = ROBOT.clamp(q)
+            q = ROBOT.clamp(q + dq)
             traj.append(np.hstack((q, self.gripper)))
             s_prev = s
-
         self.traj = traj
         self.traj_idx = 0
         self.get_logger().info(
             f"[CARTESIANO] {len(traj)} pasos, recta={dist*100:.1f} cm, "
             f"duración={len(traj)/self.rate:.2f} s")
 
-    # Stream fino: un setpoint por tick ---------------------------------------
     def stream_cb(self):
         if self.traj_idx >= len(self.traj):
             return

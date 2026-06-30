@@ -1,6 +1,7 @@
-"""Núcleo de cinemática puro (sin ROS): modelo DH, FK, Jacobiano, IK y trayectorias."""
+"""Núcleo de cinemática puro (sin ROS): modelo DH 4 GDL, FK, Jacobiano, IK y trayectorias."""
 
 from .dh_model import (
+    A2, A3, D1, HAND,
     ARM_JOINT_NAMES,
     GRIPPER_JOINT_NAME,
     N_JOINTS,
@@ -13,20 +14,21 @@ from .dh_model import (
     jacobian_position,
 )
 from .ik_solver import (
-    ACTIVE_ALL,
-    ACTIVE_J4_FIXED,
     IKResult,
-    IKSolver,
-    quat_to_rot,
+    approach_angle,
+    ik_analytic,
     rot_to_quat,
-    rpy_to_rot,
+    solve_analytic,
     solve_ik,
+    solve_numeric,
 )
 from .trajectory import joint_trajectory, trapezoidal_profile
+from .workspace import WorkspaceLimits, clamp_target, reach, validate_target
 
 __all__ = [
-    "ARM_JOINT_NAMES", "GRIPPER_JOINT_NAME", "N_JOINTS", "ROBOT", "DHChain",
-    "build_default_robot", "dh", "fkine", "jacobian_geometric", "jacobian_position",
-    "ACTIVE_ALL", "ACTIVE_J4_FIXED", "IKResult", "IKSolver", "quat_to_rot",
-    "rot_to_quat", "rpy_to_rot", "solve_ik", "joint_trajectory", "trapezoidal_profile",
+    "A2", "A3", "D1", "HAND", "ARM_JOINT_NAMES", "GRIPPER_JOINT_NAME", "N_JOINTS",
+    "ROBOT", "DHChain", "build_default_robot", "dh", "fkine", "jacobian_geometric",
+    "jacobian_position", "IKResult", "approach_angle", "ik_analytic", "rot_to_quat",
+    "solve_analytic", "solve_ik", "solve_numeric", "joint_trajectory",
+    "trapezoidal_profile", "WorkspaceLimits", "clamp_target", "reach", "validate_target",
 ]

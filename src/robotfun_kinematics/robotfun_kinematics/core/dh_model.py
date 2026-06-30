@@ -4,56 +4,48 @@
 dh_model.py
 ===========
 
-Modelo cinemático del robot de 5 GDL (RRRRR) + gripper, en la convención
-**Denavit-Hartenberg estándar** (Spong / Craig "distal"). Es la **capa de
-dominio** (Clean Architecture): NO depende de ROS y se puede ejecutar/testear
-de forma aislada (`python3 -m robotfun_kinematics.core.dh_model`).
+Modelo cinemático del robot **4 GDL (yaw + 3 pitch) + gripper** en convención
+**Denavit-Hartenberg estándar** (Spong / Craig "distal"). Capa de dominio
+(Clean Architecture): NO depende de ROS y se ejecuta/testea aislada
+(`python3 -m robotfun_kinematics.core.dh_model`).
 
-Origen del modelo
------------------
-La tabla DH proviene del trabajo de laboratorio (`frlabsyholi`: dh / fkine /
-jacobian) y fue **validada contra el robot físico** en `twin_ws`:
-    - HOME vertical (servos a 90° ⇒ q = 0)  →  FK(home) ≈ [0.010, 0, 0.393] m.
-    - El comportamiento de cada junta coincide con las fotos del robot.
+Cambio de diseño respecto al modelo previo (5 GDL)
+--------------------------------------------------
+Se **eliminó por completo el roll de muñeca** (antiguo joint_4). El antiguo
+joint_5 (pitch de muñeca) pasa a ser el nuevo **joint_4**. El robot queda como
+un brazo antropomórfico clásico: **1 yaw + 3 pitch coplanares**. Esta estructura
+tiene **cinemática inversa ANALÍTICA cerrada** (ver `ik_solver`), lo más eficiente
+y exacto posible. El servo del roll se mantiene físicamente fijo a 90° (muerto).
 
-Estructura física (yaw-pitch-pitch-roll-pitch):
-    J1 yaw   (base)
-    J2 pitch (hombro)
-    J3 pitch (codo, eje || a J2)
-    J4 ROLL  (muñeca: eje saliente Z COLINEAL con el antebrazo → longitud en d4)
-    J5 PITCH (pinza: revolute que inclina la pinza; la pinza apunta por X5)
+Medidas reales (del `brazo_ws` actualizado; URDF joint origins, metros)
+----------------------------------------------------------------------
+    joint1 yaw   z=0.0617
+    joint2 pitch z=0.0758   (hombro a z=0.1375 sobre el eje de yaw)
+    joint3 pitch z=0.1277   (codo)
+    joint4 pitch (0.038, 0, 0.1213)  (muñeca, con un pequeño offset radial real)
 
-Tabla DH estándar (longitudes en metros):
-    L0=0.010  L1=0.063  L2=0.120  L3=0.090  L4=0.030  L5=0.090
+De ahí salen las longitudes:
+    D1   = 0.1375                 base -> eje de pitch del hombro
+    A2   = 0.1277                 hombro -> codo (brazo)
+    A3   = hypot(0.038, 0.1213)   codo -> muñeca (antebrazo) = 0.12715
+    HAND = 0.100                  muñeca -> TCP  (★ MEDIR en tu robot real)
 
-    i | d_i      | theta_i   | alpha_i | a_i
-    --|----------|-----------|---------|-----
-    1 | L1       | q1 + 0°   |  +90°   | L0
-    2 | 0        | q2 + 90°  |   0°    | L2
-    3 | 0        | q3 + 90°  |  +90°   | 0
-    4 | L3 + L4  | q4 + 0°   |  +90°   | 0
-    5 | 0        | q5 + 90°  |   0°    | L5
+Tabla DH estándar (4 juntas). El vector q se SUMA al offset: θ_i = q_i + θoff_i.
 
-Nota J4 (eje saliente / la DOF menos útil para posicionar)
-----------------------------------------------------------
-El eje Z4 es COLINEAL con el antebrazo, por eso su longitud va en d4 (a lo largo
-del eje), no en a4 (perpendicular). Girar J4 es un ROLL del antebrazo.
+    i | d_i | θ_i        | α_i  | a_i
+    --|-----|------------|------|------
+    1 | D1  | q1         | +90° | 0       (yaw; α=90 lleva el eje de pitch a horizontal)
+    2 | 0   | q2 + 90°   |  0°  | A2      (hombro)
+    3 | 0   | q3 − 17.39°|  0°  | A3      (codo; el offset absorbe el bend real)
+    4 | 0   | q4 + 17.39°|  0°  | HAND    (muñeca; en HOME la mano queda vertical)
 
-  * En HOME (y siempre que la punta caiga SOBRE el eje Z4, p. ej. J5≈0) girar J4
-    NO mueve la punta → su columna del Jacobiano de POSICIÓN es exactamente 0.
-  * Con la muñeca flexionada (J5≠0) la punta queda fuera del eje y J4 SÍ la
-    desplaza algo (la barre alrededor del antebrazo).
-
-Aun así, J1 (yaw) + J2,J3 (brazo planar) ya cubren la posición 3D y J5 da el
-cabeceo de aproximación: J4 es la DOF **menos útil para posicionar** y, cerca de
-HOME, mal-condiciona el Jacobiano. Por eso el solucionador la **congela por
-defecto** (ver `ik_solver`, máscara ``ACTIVE_J4_FIXED``); el roll solo importa
-para orientar la pinza (futuro, guiado por cámara).
+HOME (q=0): brazo vertical, servos a 90°. FK(HOME) sitúa hombro/codo/muñeca en
+las posiciones del URDF (verificado) y el TCP en [0.038, 0, 0.1375+0.1277+...].
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -62,23 +54,28 @@ sin = np.sin
 pi = np.pi
 
 # ---------------------------------------------------------------------------
-# Dimensiones físicas del robot (metros). Ajustar aquí si se re-mide el robot.
+# Medidas físicas reales (metros). Ajustar si re-mides el robot.
 # ---------------------------------------------------------------------------
-L0 = 0.010
-L1 = 0.063
-L2 = 0.120
-L3 = 0.090
-L4 = 0.030
-L5 = 0.090
+D1 = 0.0617 + 0.0758            # base -> eje de pitch del hombro (joint2)
+A2 = 0.1277                     # brazo  (hombro -> codo)
+_FX, _FZ = 0.038, 0.1213        # vector codo -> muñeca (offset radial real)
+A3 = float(np.hypot(_FX, _FZ))  # antebrazo (codo -> muñeca) = 0.12715
+HAND = 0.100                    # ★ muñeca -> TCP (punto de agarre). MEDIR.
 
-#: Nombres canónicos de las juntas del brazo (deben coincidir EXACTAMENTE con el
-#: URDF y con el firmware: joint_1..joint_5; el gripper es un canal aparte).
-ARM_JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5"]
+# Offsets θ para que q=0 == HOME del URDF (mano vertical).
+_ANG_FORE = float(np.arctan2(_FZ, _FX))     # ángulo del antebrazo desde +r (72.6°)
+TH1_OFF = 0.0
+TH2_OFF = pi / 2.0
+TH3_OFF = _ANG_FORE - pi / 2.0              # ≈ -17.39°
+TH4_OFF = pi / 2.0 - _ANG_FORE              # ≈ +17.39°
+
+#: Nombres canónicos (deben coincidir con el URDF y el firmware).
+ARM_JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4"]
 GRIPPER_JOINT_NAME = "gripper"
 
 
 def dh(d: float, theta: float, a: float, alpha: float) -> np.ndarray:
-    """Matriz homogénea DH estándar: ``Rot_z(theta)·Trans_z(d)·Trans_x(a)·Rot_x(alpha)``."""
+    """Matriz homogénea DH estándar: ``Rz(theta)·Tz(d)·Tx(a)·Rx(alpha)``."""
     ct, st = cos(theta), sin(theta)
     ca, sa = cos(alpha), sin(alpha)
     return np.array([
@@ -91,15 +88,7 @@ def dh(d: float, theta: float, a: float, alpha: float) -> np.ndarray:
 
 @dataclass(frozen=True)
 class DHChain:
-    """
-    Cadena cinemática serie parametrizada por su tabla DH constante.
-
-    Encapsular la tabla en un objeto (en vez de variables globales) cumple el
-    Principio de Responsabilidad Única y permite, sin tocar el resto del código,
-    crear variantes del robot (p. ej. recalibrar L2/L3) o reusar la clase para
-    otra cadena. El vector articular ``q`` se SUMA al offset:
-    ``theta_i = q_i + theta_offset_i``.
-    """
+    """Cadena cinemática serie parametrizada por su tabla DH constante."""
 
     d: np.ndarray
     a: np.ndarray
@@ -112,40 +101,23 @@ class DHChain:
     def n_joints(self) -> int:
         return len(self.d)
 
-    # ------------------------------------------------------------------ FK ---
     def fkine(self, q, upto: int | None = None, return_frames: bool = False):
-        """
-        Cinemática directa.
-
-        q : vector (>= n_joints) en radianes. Si trae el gripper como elemento
-            extra, se ignora para la cadena del brazo.
-        upto : si se indica, devuelve la pose del frame ``upto`` (1..n_joints).
-        return_frames : si True devuelve también [T_0^1, ..., T_0^n].
-        """
+        """Cinemática directa. q en radianes; ignora elementos extra (gripper)."""
         q = np.asarray(q, dtype=float).ravel()
         n = self.n_joints if upto is None else upto
         T = np.eye(4)
         frames = []
         for i in range(n):
-            theta_i = q[i] + self.theta_offset[i]
-            T = T @ dh(self.d[i], theta_i, self.a[i], self.alpha[i])
+            T = T @ dh(self.d[i], q[i] + self.theta_offset[i], self.a[i], self.alpha[i])
             frames.append(T.copy())
-        if return_frames:
-            return T, frames
-        return T
+        return (T, frames) if return_frames else T
 
-    # ----------------------------------------------------------- Jacobiano ---
     def jacobian_geometric(self, q) -> np.ndarray:
-        """
-        Jacobiano geométrico 6 x n (todas las juntas revolutas):
-            J_v_i = z_{i-1} x (p_e - p_{i-1})     (parte lineal)
-            J_w_i = z_{i-1}                       (parte angular)
-        """
+        """Jacobiano geométrico 6 x n (todas las juntas revolutas)."""
         _, frames = self.fkine(q, return_frames=True)
         p_e = frames[-1][0:3, 3]
-
         J = np.zeros((6, self.n_joints))
-        z_prev = np.array([0.0, 0.0, 1.0])   # frame 0 = base
+        z_prev = np.array([0.0, 0.0, 1.0])
         p_prev = np.array([0.0, 0.0, 0.0])
         for i in range(self.n_joints):
             J[0:3, i] = np.cross(z_prev, p_e - p_prev)
@@ -155,33 +127,46 @@ class DHChain:
         return J
 
     def jacobian_position(self, q) -> np.ndarray:
-        """Filas lineales del Jacobiano geométrico (3 x n)."""
         return self.jacobian_geometric(q)[0:3, :]
 
     def clamp(self, q) -> np.ndarray:
-        """Satura q a [q_min, q_max]."""
         return np.clip(np.asarray(q, dtype=float), self.q_min, self.q_max)
+
+    # -- geometría para la IK analítica (sólo válida para esta estructura) ----
+    @property
+    def shoulder_height(self) -> float:
+        return float(self.d[0])      # D1
+
+    @property
+    def link_upper(self) -> float:
+        return float(self.a[1])      # A2
+
+    @property
+    def link_fore(self) -> float:
+        return float(self.a[2])      # A3
+
+    @property
+    def link_hand(self) -> float:
+        return float(self.a[3])      # HAND
 
 
 def build_default_robot() -> DHChain:
-    """Construye la cadena DH validada del robot (5 GDL)."""
-    n = 5
+    """Construye la cadena DH validada del robot (4 GDL)."""
+    n = 4
     return DHChain(
-        d=np.array([L1, 0.0, 0.0, L3 + L4, 0.0]),
-        a=np.array([L0, L2, 0.0, 0.0, L5]),
-        alpha=np.array([pi / 2.0, 0.0, pi / 2.0, pi / 2.0, 0.0]),
-        theta_offset=np.array([0.0, pi / 2.0, pi / 2.0, 0.0, pi / 2.0]),
-        q_min=np.array([-pi / 2.0] * n),   # el firmware satura a ±90°
+        d=np.array([D1, 0.0, 0.0, 0.0]),
+        a=np.array([0.0, A2, A3, HAND]),
+        alpha=np.array([pi / 2.0, 0.0, 0.0, 0.0]),
+        theta_offset=np.array([TH1_OFF, TH2_OFF, TH3_OFF, TH4_OFF]),
+        q_min=np.array([-pi / 2.0] * n),   # servos saturados a ±90°
         q_max=np.array([pi / 2.0] * n),
     )
 
 
-#: Instancia por defecto reutilizada por los nodos ROS y los tests.
 ROBOT: DHChain = build_default_robot()
 N_JOINTS: int = ROBOT.n_joints
 
 
-# Funciones de conveniencia (API estable a nivel de módulo) -------------------
 def fkine(q, **kw):
     return ROBOT.fkine(q, **kw)
 
@@ -196,12 +181,11 @@ def jacobian_position(q):
 
 if __name__ == "__main__":
     np.set_printoptions(suppress=True, precision=5)
-    print("Tabla DH del robot (5 GDL). FK(HOME=q0) — esperado ~[0.010, 0, 0.393]:")
-    T_home = ROBOT.fkine(np.zeros(N_JOINTS))
-    print(T_home)
-    print("posición efector final:", np.round(T_home[0:3, 3], 4))
-    print("\nColumna J4 del Jacobiano de posición en HOME (debe ser ~0):")
-    print(np.round(ROBOT.jacobian_position(np.zeros(N_JOINTS))[:, 3], 6))
-    q_bent = np.array([0.0, -0.5, 0.8, 0.0, 0.6])   # muñeca flexionada (J5≠0)
-    print("Columna J4 con la muñeca flexionada (J5≠0, ya NO es 0):")
-    print(np.round(ROBOT.jacobian_position(q_bent)[:, 3], 6))
+    _, fr = ROBOT.fkine(np.zeros(N_JOINTS), return_frames=True)
+    print("FK(HOME) — comparación con el URDF (medidas reales):")
+    print("  hombro :", np.round(fr[0][:3, 3], 4), " URDF joint2 (0,0,0.1375)")
+    print("  codo   :", np.round(fr[1][:3, 3], 4), " URDF joint3 (0,0,0.2652)")
+    print("  muñeca :", np.round(fr[2][:3, 3], 4), " URDF joint4 (0.038,0,0.3865)")
+    print("  TCP    :", np.round(fr[3][:3, 3], 4))
+    print(f"alcance máx desde el hombro = A2+A3+HAND = {A2 + A3 + HAND:.4f} m")
+    print("θ offsets (deg):", np.round(np.degrees(ROBOT.theta_offset), 2))

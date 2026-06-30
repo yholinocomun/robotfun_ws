@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer="yholi",
     maintainer_email="yholicomun@gmail.com",
-    description="Cinemática directa/inversa (DH estándar) del brazo 5 GDL + gripper.",
+    description="Cinemática directa/inversa (DH estándar) del brazo 4 GDL + gripper.",
     license="MIT",
     tests_require=["pytest"],
     entry_points={

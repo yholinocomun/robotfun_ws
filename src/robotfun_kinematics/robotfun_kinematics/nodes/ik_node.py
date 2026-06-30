@@ -4,26 +4,22 @@
 ik_node.py
 ==========
 
-Nodo ROS 2 de ALTO NIVEL (cinemática inversa).
+Nodo ROS 2 de cinemática inversa para el robot de **4 GDL + gripper**.
 
-    /target_pose      (geometry_msgs/Pose)        — pose cartesiana deseada
+    /target_pose      (geometry_msgs/Pose)        — posición cartesiana deseada
     /gripper_command  (std_msgs/Float32)          — apertura del gripper (rad)
-    /joint_states     (sensor_msgs/JointState)    — realimentación (semilla IK)
+    /joint_states     (sensor_msgs/JointState)    — realimentación (semilla)
               |
-              v   IK (Newton-Raphson + DLS, capa de dominio)
+              v   IK (analítica cerrada por defecto; numérica opcional)
               |
-    /joint_command    (std_msgs/Float32MultiArray)— [q1..q5, gripper] → ESP32
+    /joint_command    (std_msgs/Float32MultiArray)— [q1,q2,q3,q4, gripper] → ESP32
 
 Parámetros
 ----------
-use_joint4    : bool (default False). False ⇒ J4 fijo (4 GDL, pick & place);
-                True ⇒ J4 activo (5 GDL, tareas de orientación).
-use_orientation : bool (default False). Si True, la IK intenta también orientación.
-damping       : lambda del DLS.
-orient_weight : peso de la tarea de orientación.
-
-Este nodo es un ADAPTADOR delgado: toda la matemática vive en
-``robotfun_kinematics.core`` (Clean Architecture).
+method        : "analytic" (recom.) | "dls" | "newton" | "gradient".
+approach_deg  : ángulo de aproximación φ en grados (−90 = pinza hacia abajo).
+enforce_workspace : si True, recorta el objetivo al área de trabajo (workspace.py).
+x/y/z/r limits    : límites del área de trabajo (ver WorkspaceLimits).
 """
 
 import numpy as np
@@ -34,33 +30,34 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32, Float32MultiArray
 
 from robotfun_kinematics.core import (
-    ARM_JOINT_NAMES,
-    N_JOINTS,
-    ROBOT,
-    IKSolver,
-    quat_to_rot,
+    ARM_JOINT_NAMES, N_JOINTS, ROBOT, WorkspaceLimits, clamp_target, fkine,
+    solve_ik, validate_target,
 )
-from robotfun_kinematics.core.ik_solver import ACTIVE_ALL, ACTIVE_J4_FIXED
 
 
 class IKNode(Node):
     def __init__(self):
         super().__init__("ik_node")
 
-        self.declare_parameter("use_joint4", False)
-        self.declare_parameter("use_orientation", False)
+        self.declare_parameter("method", "analytic")
+        self.declare_parameter("approach_deg", -90.0)
         self.declare_parameter("damping", 0.05)
-        self.declare_parameter("orient_weight", 0.3)
+        self.declare_parameter("enforce_workspace", True)
+        # límites del área de trabajo (metros)
+        self.declare_parameter("ws_x", [-0.30, 0.30])
+        self.declare_parameter("ws_y", [-0.30, 0.30])
+        self.declare_parameter("ws_z", [0.02, 0.45])
 
-        self.use_joint4 = bool(self.get_parameter("use_joint4").value)
-        self.use_orientation = bool(self.get_parameter("use_orientation").value)
-        damping = float(self.get_parameter("damping").value)
-        orient_weight = float(self.get_parameter("orient_weight").value)
+        self.method = str(self.get_parameter("method").value)
+        self.approach = np.radians(float(self.get_parameter("approach_deg").value))
+        self.damping = float(self.get_parameter("damping").value)
+        self.enforce_ws = bool(self.get_parameter("enforce_workspace").value)
+        xr = self.get_parameter("ws_x").value
+        yr = self.get_parameter("ws_y").value
+        zr = self.get_parameter("ws_z").value
+        self.limits = WorkspaceLimits(x_min=xr[0], x_max=xr[1], y_min=yr[0],
+                                      y_max=yr[1], z_min=zr[0], z_max=zr[1])
 
-        self.solver = IKSolver(robot=ROBOT, damping=damping, orient_weight=orient_weight)
-        self.active_mask = ACTIVE_ALL if self.use_joint4 else ACTIVE_J4_FIXED
-
-        # Semilla = última realimentación articular conocida (arranca en HOME).
         self.q_current = np.zeros(N_JOINTS)
         self.gripper_cmd = 0.0
 
@@ -70,12 +67,10 @@ class IKNode(Node):
         self.create_subscription(JointState, "/joint_states", self.joint_state_cb, 10)
 
         self.get_logger().info(
-            f"ik_node listo | use_joint4={self.use_joint4} "
-            f"(J4 {'activo, 5 GDL' if self.use_joint4 else 'fijo, 4 GDL'}) "
-            f"| use_orientation={self.use_orientation}. "
-            "Publica una Pose en /target_pose.")
+            f"ik_node (4 GDL) listo | método={self.method} "
+            f"φ={np.degrees(self.approach):.0f}° workspace={'ON' if self.enforce_ws else 'OFF'}. "
+            "Publica una posición en /target_pose.")
 
-    # -- realimentación: actualiza la semilla de la IK ------------------------
     def joint_state_cb(self, msg: JointState):
         name_to_pos = dict(zip(msg.name, msg.position))
         for i, jn in enumerate(ARM_JOINT_NAMES):
@@ -84,30 +79,35 @@ class IKNode(Node):
 
     def gripper_cb(self, msg: Float32):
         self.gripper_cmd = float(msg.data)
-        self.publish_command(self.q_current)   # reenvía con la nueva apertura
+        self.publish_command(self.q_current)
 
-    # -- objetivo cartesiano → IK → comando ----------------------------------
     def target_cb(self, msg: Pose):
         x_des = np.array([msg.position.x, msg.position.y, msg.position.z])
-        R_des = None
-        if self.use_orientation:
-            R_des = quat_to_rot(msg.orientation.x, msg.orientation.y,
-                                msg.orientation.z, msg.orientation.w)
 
-        res = self.solver.solve(x_des, self.q_current, R_des=R_des,
-                                active_mask=self.active_mask)
+        ok, reason = validate_target(x_des, self.limits)
+        if not ok:
+            if self.enforce_ws:
+                x_clamped = clamp_target(x_des, self.limits)
+                self.get_logger().warn(
+                    f"objetivo fuera del área de trabajo ({reason}); "
+                    f"recortado a {np.round(x_clamped, 3)}.")
+                x_des = x_clamped
+            else:
+                self.get_logger().warn(f"objetivo fuera del área de trabajo ({reason}).")
+
+        res = solve_ik(x_des, self.q_current, approach=self.approach,
+                       method=self.method, damping=self.damping)
         if not res.ok:
             self.get_logger().warn(
-                f"IK no convergió (err={res.error:.4f}). Se publica la mejor "
-                "solución; posible objetivo fuera del espacio de trabajo o singularidad.")
+                f"IK no resolvió ({res.reason}); se publica la mejor solución.")
 
         self.q_current = res.q
         self.publish_command(res.q)
 
-        x_chk = ROBOT.fkine(res.q)[0:3, 3]
+        x_chk = fkine(res.q)[0:3, 3]
         self.get_logger().info(
             f"objetivo {np.round(x_des, 4)} → q(deg) {np.round(np.degrees(res.q), 1)} "
-            f"| FK={np.round(x_chk, 4)} err={res.error:.2e}")
+            f"| FK={np.round(x_chk, 4)} err={res.error:.2e} ({res.method})")
 
     def publish_command(self, q):
         out = Float32MultiArray()

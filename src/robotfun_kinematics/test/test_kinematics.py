@@ -1,66 +1,91 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Tests del núcleo de cinemática (FK, Jacobiano, IK) — sin ROS."""
+"""Tests del núcleo de cinemática 4 GDL (FK, IK analítica/numérica, workspace)."""
 
 import numpy as np
 import pytest
 
-from robotfun_kinematics.core import N_JOINTS, ROBOT, solve_ik
-from robotfun_kinematics.core.ik_solver import ACTIVE_J4_FIXED
+from robotfun_kinematics.core import (
+    N_JOINTS, ROBOT, WorkspaceLimits, approach_angle, clamp_target,
+    fkine, solve_analytic, solve_ik, validate_target,
+)
+from robotfun_kinematics.core.ik_solver import _wrap
+
+PHI_DOWN = -np.pi / 2.0
 
 
-def test_fk_home():
-    """FK en HOME (q=0) ≈ [0.010, 0, 0.393] m (validado contra el robot físico)."""
-    p = ROBOT.fkine(np.zeros(N_JOINTS))[0:3, 3]
-    np.testing.assert_allclose(p, [0.010, 0.0, 0.393], atol=1e-3)
+def test_n_joints_is_four():
+    assert N_JOINTS == 4
 
 
-def test_j4_position_column_zero_at_home():
-    """La columna de J4 del Jacobiano de POSICIÓN es 0 en HOME y cuando J5=0
-    (la punta cae sobre el eje del antebrazo). Con J5≠0 deja de ser 0."""
-    # HOME y cualquier postura con J5 = 0 → punta sobre el eje Z4 → columna 0.
-    for q5 in (0.0,):
-        for _ in range(10):
-            q = np.array([0.3, -0.4, 0.6, 0.5, q5])
-            assert np.linalg.norm(ROBOT.jacobian_position(q)[:, 3]) < 1e-9
-    # Muñeca flexionada (J5 ≠ 0): J4 sí desplaza la punta.
-    q_bent = np.array([0.0, -0.5, 0.8, 0.0, 0.6])
-    assert np.linalg.norm(ROBOT.jacobian_position(q_bent)[:, 3]) > 1e-3
+def test_fk_home_matches_urdf():
+    """FK(HOME=q0) reproduce las posiciones de junta del URDF (medidas reales)."""
+    _, fr = ROBOT.fkine(np.zeros(N_JOINTS), return_frames=True)
+    np.testing.assert_allclose(fr[0][:3, 3], [0.0, 0.0, 0.1375], atol=1e-4)   # hombro
+    np.testing.assert_allclose(fr[1][:3, 3], [0.0, 0.0, 0.2652], atol=1e-4)   # codo
+    np.testing.assert_allclose(fr[2][:3, 3], [0.038, 0.0, 0.3865], atol=1e-4)  # muñeca
 
 
-@pytest.mark.parametrize("use_joint4", [False, True])
-def test_ik_roundtrip(use_joint4):
-    """FK(IK(x)) ≈ x para objetivos alcanzables, en ambos modos de J4."""
-    rng = np.random.default_rng(2)
-    q_seed = np.array([0.0, -0.5, 0.8, 0.0, 0.3])   # "ready" no singular
-    ok_count = 0
-    for _ in range(30):
-        q_true = rng.uniform(-1.0, 1.0, N_JOINTS)
-        if not use_joint4:
-            q_true[3] = 0.0                          # J4 fijo: objetivo sin roll
-        x_goal = ROBOT.fkine(q_true)[0:3, 3]
-        res = solve_ik(x_goal, q_seed, use_joint4=use_joint4)
-        x_reached = ROBOT.fkine(res.q)[0:3, 3]
-        if np.linalg.norm(x_goal - x_reached) < 1e-3:
-            ok_count += 1
-    assert ok_count >= 27   # tolera algún objetivo en singularidad de frontera
+def _reachable_front_targets(n, seed_rng=0):
+    """Genera n objetivos cartesianos alcanzables apuntando abajo."""
+    rng = np.random.default_rng(seed_rng)
+    out = []
+    while len(out) < n:
+        x = rng.uniform(0.10, 0.28); y = rng.uniform(-0.15, 0.15); z = rng.uniform(0.04, 0.22)
+        if solve_analytic(x, y, z, PHI_DOWN).ok:
+            out.append((x, y, z))
+    return out
 
 
-def test_ik_keeps_j4_frozen_when_fixed():
-    """Con J4 fijo, la solución NO mueve q4 respecto a la semilla."""
-    q_seed = np.array([0.0, -0.5, 0.8, 0.0, 0.3])
-    x_goal = ROBOT.fkine(np.array([0.4, -0.3, 0.5, 0.0, 0.2]))[0:3, 3]
-    res = solve_ik(x_goal, q_seed, use_joint4=False)
-    assert abs(res.q[3] - q_seed[3]) < 1e-12
+def test_analytic_ik_exact():
+    """La IK analítica reproduce posición y ángulo de aproximación exactos."""
+    for (x, y, z) in _reachable_front_targets(40):
+        res = solve_analytic(x, y, z, PHI_DOWN)
+        assert res.ok
+        p = ROBOT.fkine(res.q)[0:3, 3]
+        assert np.linalg.norm(p - [x, y, z]) < 1e-6
+        assert abs(_wrap(approach_angle(res.q) - PHI_DOWN)) < 1e-6
+
+
+@pytest.mark.parametrize("method", ["dls", "newton"])
+def test_numeric_ik_with_warm_seed(method):
+    """DLS y Newton convergen a la pose con semilla pick-ready (warm-start)."""
+    seed = solve_analytic(0.18, 0.0, 0.10, PHI_DOWN).q
+    ok = 0
+    targets = _reachable_front_targets(30, seed_rng=1)
+    for (x, y, z) in targets:
+        res = solve_ik([x, y, z], seed, approach=PHI_DOWN, method=method)
+        p = ROBOT.fkine(res.q)[0:3, 3]
+        if np.linalg.norm(p - [x, y, z]) < 1e-3 and abs(_wrap(approach_angle(res.q) - PHI_DOWN)) < 1e-2:
+            ok += 1
+    assert ok >= 28          # tolera algún caso al borde del espacio de trabajo
 
 
 def test_joint_limits_respected():
-    """La IK satura a [q_min, q_max]."""
-    q_seed = np.zeros(N_JOINTS)
-    res = solve_ik([1.0, 1.0, 1.0], q_seed, use_joint4=True)  # objetivo lejano
+    res = solve_ik([0.20, 0.0, 0.10], np.zeros(N_JOINTS), approach=PHI_DOWN, method="dls")
     assert np.all(res.q >= ROBOT.q_min - 1e-9)
     assert np.all(res.q <= ROBOT.q_max + 1e-9)
 
 
-def test_active_mask_default_is_j4_fixed():
-    assert list(ACTIVE_J4_FIXED) == [True, True, True, False, True]
+def test_unreachable_target_flagged():
+    """Un objetivo demasiado lejos se marca como no alcanzable."""
+    res = solve_analytic(0.6, 0.0, 0.4, PHI_DOWN)
+    assert not res.ok
+
+
+def test_workspace_validate_and_clamp():
+    lim = WorkspaceLimits()
+    ok, _ = validate_target([0.20, 0.0, 0.10], lim)
+    assert ok
+    bad, reason = validate_target([0.0, 0.0, 0.0], lim)   # bajo la mesa / sin alcance
+    assert not bad and reason
+    # clamp deja el punto dentro de la caja y del alcance
+    c = clamp_target([0.9, 0.9, 0.9], lim)
+    ok2, _ = validate_target(c, lim)
+    assert ok2
+
+
+def test_approach_angle_formula():
+    """approach_angle(q) = q2+q3+q4 + π/2 (los offsets de codo y muñeca se cancelan)."""
+    q = np.array([0.2, -0.4, 0.5, -0.3])
+    assert abs(approach_angle(q) - (q[1] + q[2] + q[3] + np.pi / 2.0)) < 1e-9

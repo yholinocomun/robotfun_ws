@@ -4,30 +4,35 @@
 ik_solver.py
 ============
 
-Cinemática **inversa** numérica (capa de dominio, sin ROS) para la cadena DH del
-robot. Usa Newton-Raphson con pseudo-inversa amortiguada (Damped Least Squares /
-Levenberg-Marquardt):
+Cinemática **inversa** del robot de 4 GDL (yaw + 3 pitch) + gripper. Capa de
+dominio (sin ROS).
 
-    dq = J^T (J J^T + lambda^2 I)^-1 · e
+La tarea de un brazo de 4 GDL es **posición (3) + ángulo de aproximación (1)** =
+4 coordenadas con 4 juntas → sistema cuadrado. Por eso ofrecemos varias vías,
+de la más eficiente a la más general:
 
-El amortiguamiento evita pasos enormes cerca de singularidades (det(J J^T) → 0).
+  1) ANALÍTICA cerrada  (``method="analytic"``, RECOMENDADA)
+     yaw directo + 2R planar por ley de cosenos. Exacta, instantánea, da las dos
+     ramas (codo arriba/abajo). Es lo más eficiente para esta estructura.
 
-Máscara de juntas activas — las DOS versiones del robot
--------------------------------------------------------
-El método ``solve`` admite ``active_mask`` (booleanos por junta). Las juntas
-inactivas se **congelan** en su valor semilla y se eliminan sus columnas del
-Jacobiano antes del DLS. Esto implementa, con UN solo solucionador, las dos
-versiones pedidas:
+  2) DLS / Levenberg-Marquardt (``method="dls"``, la "mejor" numérica)
+     dq = Jᵀ(JJᵀ + λ²I)⁻¹ e. Amortiguada → estable cerca de singularidades.
+     Útil si pides sólo posición (deja libre el ángulo) o como respaldo robusto.
 
-    * J4 FIJO (por defecto, ``ACTIVE_J4_FIXED = [T,T,T,F,T]``): pick & place.
-      J4 es un roll del antebrazo: su columna de posición es 0 en HOME y pequeña
-      cerca de él (mal-condiciona el DLS), y es la DOF menos útil para posicionar
-      (J1+J2+J3 ya cubren la posición y J5 el cabeceo). Congelarlo da una IK de
-      4 GDL bien condicionada y sin deriva de q4. Para pastillas axisimétricas el
-      roll de la pinza es irrelevante.
+  3) Newton / Gauss-Newton (``method="newton"``)
+     dq = J⁺ e (pseudo-inversa). Convergencia cuadrática pero frágil en
+     singularidades (sin amortiguamiento).
 
-    * J4 ACTIVO (``ACTIVE_ALL = [T,T,T,T,T]``): 5 GDL, para tareas donde la
-      cámara fije la orientación/roll del objeto (futuro).
+  4) Gradiente / Jacobiano transpuesto (``method="gradient"``)
+     dq = α Jᵀ e. El más simple y barato por iteración; converge lento. Didáctico.
+
+Convención del ángulo de aproximación φ
+---------------------------------------
+φ = ángulo absoluto de la mano en el plano de trabajo (plano vertical que
+contiene al brazo tras el yaw), medido desde el eje radial +r:
+    φ = +90° → la pinza apunta ARRIBA   (HOME)
+    φ =   0° → apunta horizontal
+    φ = −90° → apunta ABAJO  (pick & place top-down)
 """
 
 from __future__ import annotations
@@ -36,86 +41,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .dh_model import ROBOT, DHChain
+from .dh_model import (
+    TH2_OFF, TH3_OFF, TH4_OFF, ROBOT, DHChain,
+)
 
 cos = np.cos
 sin = np.sin
-
-#: Máscaras predefinidas para las dos versiones del robot.
-ACTIVE_J4_FIXED = np.array([True, True, True, False, True])
-ACTIVE_ALL = np.array([True, True, True, True, True])
-
-
-# ---------------------------------------------------------------------------
-# Utilidades de orientación (independientes de la IK; reutilizables por nodos)
-# ---------------------------------------------------------------------------
-def rot_error(R_cur: np.ndarray, R_des: np.ndarray) -> np.ndarray:
-    """Error de orientación axis-angle (3,) que lleva R_cur → R_des."""
-    R_err = R_des @ R_cur.T
-    cos_ang = np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0)
-    ang = np.arccos(cos_ang)
-    if ang < 1e-9:
-        return np.zeros(3)
-    axis = np.array([
-        R_err[2, 1] - R_err[1, 2],
-        R_err[0, 2] - R_err[2, 0],
-        R_err[1, 0] - R_err[0, 1],
-    ]) / (2.0 * sin(ang))
-    return axis * ang
-
-
-def rpy_to_rot(roll: float, pitch: float, yaw: float) -> np.ndarray:
-    """Roll-Pitch-Yaw (convención URDF: Rz·Ry·Rx) → matriz de rotación."""
-    cr, sr = cos(roll), sin(roll)
-    cp, sp = cos(pitch), sin(pitch)
-    cy, sy = cos(yaw), sin(yaw)
-    Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
-    Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
-    Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
-    return Rz @ Ry @ Rx
-
-
-def quat_to_rot(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
-    """Cuaternión (x,y,z,w) → matriz de rotación 3x3 (normaliza primero)."""
-    n = np.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-    if n < 1e-9:
-        return np.eye(3)
-    qx, qy, qz, qw = qx / n, qy / n, qz / n, qw / n
-    return np.array([
-        [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
-        [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
-        [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
-    ])
-
-
-def rot_to_quat(R: np.ndarray):
-    """Matriz de rotación 3x3 → cuaternión (x, y, z, w)."""
-    tr = np.trace(R)
-    if tr > 0:
-        s = np.sqrt(tr + 1.0) * 2
-        qw = 0.25 * s
-        qx = (R[2, 1] - R[1, 2]) / s
-        qy = (R[0, 2] - R[2, 0]) / s
-        qz = (R[1, 0] - R[0, 1]) / s
-    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
-        s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
-        qw = (R[2, 1] - R[1, 2]) / s
-        qx = 0.25 * s
-        qy = (R[0, 1] + R[1, 0]) / s
-        qz = (R[0, 2] + R[2, 0]) / s
-    elif R[1, 1] > R[2, 2]:
-        s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
-        qw = (R[0, 2] - R[2, 0]) / s
-        qx = (R[0, 1] + R[1, 0]) / s
-        qy = 0.25 * s
-        qz = (R[1, 2] + R[2, 1]) / s
-    else:
-        s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
-        qw = (R[1, 0] - R[0, 1]) / s
-        qx = (R[0, 2] + R[2, 0]) / s
-        qy = (R[1, 2] + R[2, 1]) / s
-        qz = 0.25 * s
-    return qx, qy, qz, qw
+pi = np.pi
 
 
 # ---------------------------------------------------------------------------
@@ -124,106 +56,224 @@ def rot_to_quat(R: np.ndarray):
 @dataclass
 class IKResult:
     q: np.ndarray          # solución articular (rad), n_joints
-    ok: bool               # True si convergió por debajo de la tolerancia
-    error: float           # norma del error final
-    iterations: int        # iteraciones consumidas
+    ok: bool               # True si es válida (alcanzable y dentro de límites)
+    error: float           # norma del error cartesiano final
+    method: str            # método usado
+    iterations: int = 0    # iteraciones (0 para analítica)
+    reason: str = ""       # motivo si ok=False
+
+
+def approach_angle(q) -> float:
+    """Ángulo absoluto φ de la mano en el plano (rad) para una postura q."""
+    q = np.asarray(q, dtype=float).ravel()
+    return (q[1] + TH2_OFF) + (q[2] + TH3_OFF) + (q[3] + TH4_OFF)
 
 
 # ---------------------------------------------------------------------------
-# Solucionador IK
+# 1) IK ANALÍTICA CERRADA
 # ---------------------------------------------------------------------------
-class IKSolver:
+def _wrap(a: float) -> float:
+    return (a + pi) % (2.0 * pi) - pi
+
+
+def _planar_2r(rw: float, zw: float, d1: float, a2: float, a3: float, elbow_up: bool):
+    """2R planar: hombro (0,d1) → muñeca (rw,zw). Devuelve (ang2_abs, ang3_abs) o None."""
+    dr, dz = rw, zw - d1
+    c3 = (dr * dr + dz * dz - a2 * a2 - a3 * a3) / (2.0 * a2 * a3)
+    if c3 < -1.0 or c3 > 1.0:
+        return None
+    s3 = np.sqrt(max(0.0, 1.0 - c3 * c3))
+    if elbow_up:
+        s3 = -s3
+    ang_elbow = np.arctan2(s3, c3)
+    ang2 = np.arctan2(dz, dr) - np.arctan2(a3 * sin(ang_elbow), a2 + a3 * cos(ang_elbow))
+    return ang2, ang2 + ang_elbow
+
+
+def ik_analytic(x: float, y: float, z: float, phi: float,
+                robot: DHChain = ROBOT, elbow_up: bool = False):
     """
-    Solucionador IK (DLS) configurable e inyectable con cualquier ``DHChain``
-    (Dependency Inversion: depende de la abstracción, no de variables globales).
+    IK cerrada (rama frontal): TCP (x,y,z) + ángulo de aproximación φ (rad).
+
+    φ se mide en el plano vertical que va de la base hacia (x,y): +90°=arriba,
+    0°=horizontal hacia afuera, −90°=abajo (pick top-down). q1=atan2(y,x) (el
+    robot opera al frente, q1∈±90°). ``elbow_up`` elige la rama del codo.
+    Devuelve q=[q1..q4] o None si esa rama no alcanza.
     """
-
-    def __init__(self, robot: DHChain = ROBOT, damping: float = 0.05,
-                 max_iter: int = 500, tol: float = 1e-4, step_clip: float = 0.3,
-                 orient_weight: float = 0.3):
-        self.robot = robot
-        self.damping = damping
-        self.max_iter = max_iter
-        self.tol = tol
-        self.step_clip = step_clip
-        self.orient_weight = orient_weight
-
-    def solve(self, x_des, q0, *, R_des=None, active_mask=ACTIVE_J4_FIXED,
-              respect_limits: bool = True) -> IKResult:
-        """
-        Parameters
-        ----------
-        x_des : (3,) posición deseada [X, Y, Z] (m).
-        q0    : (n,) semilla articular (rad). Conviene una postura "ready" NO
-                singular (el home vertical es singularidad de frontera).
-        R_des : (3,3) orientación deseada o None (solo posición; recomendado 5 GDL).
-        active_mask : (n,) bool. Juntas False se congelan en su valor de q0.
-        respect_limits : satura q a [q_min, q_max] cada iteración.
-        """
-        robot = self.robot
-        n = robot.n_joints
-        x_des = np.asarray(x_des, dtype=float).ravel()
-        q = np.asarray(q0, dtype=float).ravel().copy()[:n]
-        active = np.asarray(active_mask, dtype=bool)
-        idx = np.where(active)[0]
-        lam2 = self.damping * self.damping
-        use_orient = R_des is not None
-
-        err = np.inf
-        for it in range(1, self.max_iter + 1):
-            T = robot.fkine(q)
-            e_pos = x_des - T[0:3, 3]
-
-            if use_orient:
-                e_ori = self.orient_weight * rot_error(T[0:3, 0:3], R_des)
-                e = np.hstack((e_pos, e_ori))
-                J_full = robot.jacobian_geometric(q)
-                J_full = np.vstack((J_full[0:3, :], self.orient_weight * J_full[3:6, :]))
-            else:
-                e = e_pos
-                J_full = robot.jacobian_position(q)
-
-            err = float(np.linalg.norm(e))
-            if err < self.tol:
-                return IKResult(q=q, ok=True, error=err, iterations=it)
-
-            # Solo columnas de juntas ACTIVAS → DLS bien condicionado.
-            J = J_full[:, idx]
-            m = J.shape[0]
-            dq_active = J.T @ np.linalg.solve(J @ J.T + lam2 * np.eye(m), e)
-
-            # Limitar el tamaño del paso (estabilidad / trayectoria suave).
-            norm_dq = np.linalg.norm(dq_active)
-            if norm_dq > self.step_clip:
-                dq_active *= self.step_clip / norm_dq
-
-            q[idx] += dq_active
-            if respect_limits:
-                q = robot.clamp(q)
-
-        return IKResult(q=q, ok=False, error=err, iterations=self.max_iter)
+    d1, a2, a3, hand = (robot.shoulder_height, robot.link_upper,
+                        robot.link_fore, robot.link_hand)
+    q1 = np.arctan2(y, x)
+    r = np.hypot(x, y)
+    rw = r - hand * cos(phi)                     # muñeca en el plano (r, z)
+    zw = z - hand * sin(phi)
+    planar = _planar_2r(rw, zw, d1, a2, a3, elbow_up)
+    if planar is None:
+        return None
+    ang2, ang3 = planar
+    q2 = ang2 - TH2_OFF
+    q3 = _wrap(ang3 - ang2 - TH3_OFF)
+    q4 = _wrap(phi - ang3 - TH4_OFF)
+    return np.array([q1, q2, q3, q4])
 
 
-def solve_ik(x_des, q0, *, robot: DHChain = ROBOT, use_joint4: bool = False,
-             R_des=None, damping: float = 0.05, orient_weight: float = 0.3) -> IKResult:
-    """Atajo funcional. ``use_joint4=False`` ⇒ J4 fijo (pick & place)."""
-    solver = IKSolver(robot=robot, damping=damping, orient_weight=orient_weight)
-    mask = ACTIVE_ALL if use_joint4 else ACTIVE_J4_FIXED
-    return solver.solve(x_des, q0, R_des=R_des, active_mask=mask)
+def solve_analytic(x, y, z, phi, robot: DHChain = ROBOT, seed=None) -> IKResult:
+    """
+    IK analítica: prueba las dos ramas del codo, filtra por límites articulares
+    y elige la válida más cercana a ``seed`` (continuidad de movimiento).
+    """
+    target = np.array([x, y, z])
+    candidates = []   # (q, in_limits, err)
+    for up in (False, True):
+        q = ik_analytic(x, y, z, phi, robot, elbow_up=up)
+        if q is None:
+            continue
+        in_lim = bool(np.all(q >= robot.q_min - 1e-9) and np.all(q <= robot.q_max + 1e-9))
+        err = float(np.linalg.norm(robot.fkine(q)[0:3, 3] - target))
+        candidates.append((q, in_lim, err))
+
+    valid = [c for c in candidates if c[1] and c[2] < 1e-4]
+    if valid:
+        if seed is not None:
+            s = np.asarray(seed, dtype=float).ravel()[:robot.n_joints]
+            q = min(valid, key=lambda c: np.linalg.norm(c[0] - s))[0]
+        else:
+            q = valid[0][0]
+        return IKResult(q=q, ok=True, method="analytic",
+                        error=float(np.linalg.norm(robot.fkine(q)[0:3, 3] - target)))
+
+    if not candidates:
+        return IKResult(q=np.zeros(robot.n_joints), ok=False, error=float("inf"),
+                        method="analytic", reason="objetivo fuera del espacio de trabajo")
+    q = robot.clamp(min(candidates, key=lambda c: c[2])[0])
+    return IKResult(q=q, ok=False, method="analytic",
+                    error=float(np.linalg.norm(robot.fkine(q)[0:3, 3] - target)),
+                    reason="solución fuera de límites articulares (¿q1>90°? objetivo detrás)")
+
+
+# ---------------------------------------------------------------------------
+# 2-4) IK NUMÉRICA (gradiente / Newton / DLS) sobre [posición(3); φ(1)]
+# ---------------------------------------------------------------------------
+def _task_error_and_jacobian(robot, q, x_des, phi_des):
+    T = robot.fkine(q)
+    e_pos = x_des - T[0:3, 3]
+    Jp = robot.jacobian_position(q)                 # 3 x n
+    if phi_des is None:                             # sólo posición (redundante)
+        return e_pos, Jp
+    e_phi = np.array([_wrap(phi_des - approach_angle(q))])   # error angular envuelto
+    # gradiente de φ respecto a q: [0,1,1,1,...] (todas las pitch suman)
+    Jphi = np.zeros((1, robot.n_joints)); Jphi[0, 1:] = 1.0
+    return np.hstack((e_pos, e_phi)), np.vstack((Jp, Jphi))
+
+
+def solve_numeric(x_des, q0, phi_des=None, robot: DHChain = ROBOT, method="dls",
+                  damping=0.05, alpha=0.3, max_iter=200, tol=1e-5,
+                  step_clip=0.4, respect_limits=True) -> IKResult:
+    """
+    IK numérica iterativa. ``method`` ∈ {"dls", "newton", "gradient"}.
+    Si ``phi_des`` es None, resuelve sólo posición (la redundancia la fija el método).
+    """
+    x_des = np.asarray(x_des, dtype=float).ravel()
+    q = np.asarray(q0, dtype=float).ravel().copy()[:robot.n_joints]
+    lam2 = damping * damping
+    err = np.inf
+    for it in range(1, max_iter + 1):
+        e, J = _task_error_and_jacobian(robot, q, x_des, phi_des)
+        err = float(np.linalg.norm(e))
+        if err < tol:
+            return IKResult(q=q, ok=True, error=err, method=method, iterations=it)
+
+        m = J.shape[0]
+        if method == "gradient":                    # Jacobiano transpuesto
+            dq = alpha * (J.T @ e)
+        elif method == "newton":                    # pseudo-inversa (Gauss-Newton)
+            dq = J.T @ np.linalg.solve(J @ J.T + 1e-12 * np.eye(m), e)
+        else:                                       # "dls" / Levenberg-Marquardt
+            dq = J.T @ np.linalg.solve(J @ J.T + lam2 * np.eye(m), e)
+
+        nrm = np.linalg.norm(dq)
+        if nrm > step_clip:
+            dq *= step_clip / nrm
+        q = q + dq
+        if respect_limits:
+            q = robot.clamp(q)
+
+    return IKResult(q=q, ok=False, error=err, method=method, iterations=max_iter,
+                    reason="no convergió (¿fuera de alcance o singularidad?)")
+
+
+# ---------------------------------------------------------------------------
+# Interfaz unificada
+# ---------------------------------------------------------------------------
+def solve_ik(x_des, q0, *, approach=None, method="analytic", robot: DHChain = ROBOT,
+             **kw) -> IKResult:
+    """
+    Punto de entrada único.
+      method="analytic"  → IK cerrada (si `approach` es None usa −90°, top-down);
+                           usa q0 como semilla para elegir la rama más cercana.
+      method="dls"|"newton"|"gradient" → numérica (usa q0 como semilla).
+    """
+    x_des = np.asarray(x_des, dtype=float).ravel()
+    if method == "analytic":
+        phi = -pi / 2.0 if approach is None else approach   # por defecto: top-down
+        return solve_analytic(x_des[0], x_des[1], x_des[2], phi, robot, seed=q0)
+    return solve_numeric(x_des, q0, phi_des=approach, robot=robot, method=method, **kw)
+
+
+# ---------------------------------------------------------------------------
+# Utilidades de orientación (reutilizadas por nodos)
+# ---------------------------------------------------------------------------
+def rot_to_quat(R: np.ndarray):
+    tr = np.trace(R)
+    if tr > 0:
+        s = np.sqrt(tr + 1.0) * 2
+        qw = 0.25 * s; qx = (R[2, 1] - R[1, 2]) / s
+        qy = (R[0, 2] - R[2, 0]) / s; qz = (R[1, 0] - R[0, 1]) / s
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
+        qw = (R[2, 1] - R[1, 2]) / s; qx = 0.25 * s
+        qy = (R[0, 1] + R[1, 0]) / s; qz = (R[0, 2] + R[2, 0]) / s
+    elif R[1, 1] > R[2, 2]:
+        s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
+        qw = (R[0, 2] - R[2, 0]) / s; qx = (R[0, 1] + R[1, 0]) / s
+        qy = 0.25 * s; qz = (R[1, 2] + R[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
+        qw = (R[1, 0] - R[0, 1]) / s; qx = (R[0, 2] + R[2, 0]) / s
+        qy = (R[1, 2] + R[2, 1]) / s; qz = 0.25 * s
+    return qx, qy, qz, qw
 
 
 if __name__ == "__main__":
     np.set_printoptions(suppress=True, precision=5)
     rng = np.random.default_rng(0)
-    q_seed = np.array([0.0, -0.5, 0.8, 0.0, 0.3])   # "ready" no singular
-    for label, uj4 in [("J4 FIJO (4 GDL)", False), ("J4 ACTIVO (5 GDL)", True)]:
-        print(f"\n=== {label} ===")
-        for k in range(5):
-            q_true = rng.uniform(-1.0, 1.0, 5)
-            if not uj4:
-                q_true[3] = 0.0
-            x_goal = ROBOT.fkine(q_true)[0:3, 3]
-            res = solve_ik(x_goal, q_seed, use_joint4=uj4)
-            x_reached = ROBOT.fkine(res.q)[0:3, 3]
-            print(f"  caso {k}: ok={res.ok} it={res.iterations} "
-                  f"err={res.error:.2e} |x_des-x_alc|={np.linalg.norm(x_goal - x_reached):.2e}")
+    print("Caso de uso real: pick & place sobre una MESA al frente, pinza ABAJO.")
+    print("Objetivo cartesiano (x,y,z) + φ=−90°. Comparación de métodos:\n")
+    phi = -pi / 2.0                       # pinza apuntando hacia abajo
+    # Semilla numérica = postura 'lista para pick' (warm-start, como en operación).
+    seed = solve_analytic(0.18, 0.0, 0.10, phi).q
+    print(f"  semilla numérica (pick-ready) q={np.round(seed, 3)}")
+    stats = {m: [0, 0.0] for m in ["analytic", "dls", "newton", "gradient"]}
+    reachable = 0
+    N = 200
+    for _ in range(N):
+        x = rng.uniform(0.10, 0.28)
+        y = rng.uniform(-0.15, 0.15)
+        z = rng.uniform(0.04, 0.22)
+        target = np.array([x, y, z])
+        if not solve_analytic(x, y, z, phi).ok:
+            continue                      # objetivo no alcanzable apuntando abajo
+        reachable += 1
+        for m in stats:
+            res = solve_ik(target, seed, approach=phi, method=m)
+            d = np.linalg.norm(ROBOT.fkine(res.q)[0:3, 3] - target)
+            dphi = abs(_wrap(approach_angle(res.q) - phi))
+            stats[m][0] += int(d < 1e-3 and dphi < 1e-2)
+            stats[m][1] += res.iterations
+    print(f"  objetivos alcanzables (de {N} en la mesa): {reachable}\n")
+    print(f"  {'método':9s}  aciertos   iters_prom   nota")
+    notas = {"analytic": "exacta, 0 iteraciones (RECOMENDADA)",
+             "dls": "robusta cerca de singularidades (mejor numérica)",
+             "newton": "rápida; sin amortiguar es frágil",
+             "gradient": "simple/barata, converge lento"}
+    for m, (ok, its) in stats.items():
+        print(f"  {m:9s}  {ok:3d}/{reachable:<3d}   {its/max(reachable,1):6.1f}     {notas[m]}")
