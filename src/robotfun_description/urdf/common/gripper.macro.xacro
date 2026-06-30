@@ -1,0 +1,143 @@
+<?xml version="1.0"?>
+<!-- ============================================================================
+     gripper.macro.xacro
+     Gripper de 1 GDL (canal 6). El servo `gripper` abre/cierra: un dedo es
+     accionado (joint "gripper") y el opuesto lo sigue con <mimic multiplier="-1">.
+     Esto reproduce en /joint_states y /joint_command el 6º valor [.. , gripper].
+
+     Dos macros (sin condicionales internos, más legibles):
+       * gripper_primitive : dedos de caja (modelo canónico / primitivo).
+       * gripper_mesh      : dedos con los STL reales rescatados de twin_ws.
+     El gripper real está en marco global (como las demás meshes): el offset de
+     placement es un punto de partida y se afina en RViz (ver README).
+     ========================================================================== -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ===== PRIMITIVO ===== -->
+  <xacro:macro name="gripper_primitive" params="parent *origin">
+    <link name="gripper_base">
+      <inertial>
+        <mass value="0.03"/>
+        <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0.005" rpy="0 0 0"/>
+        <geometry><box size="0.03 0.05 0.01"/></geometry>
+        <material name="grey"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0.005" rpy="0 0 0"/>
+        <geometry><box size="0.03 0.05 0.01"/></geometry>
+      </collision>
+    </link>
+    <joint name="gripper_mount" type="fixed">
+      <xacro:insert_block name="origin"/>
+      <parent link="${parent}"/>
+      <child link="gripper_base"/>
+    </joint>
+
+    <xacro:gripper_finger_primitive side="left"  reflect="1"/>
+    <xacro:gripper_finger_primitive side="right" reflect="-1"/>
+
+    <!-- dedo accionado (left) -->
+    <joint name="gripper" type="revolute">
+      <origin xyz="0.0 0.018 0.01" rpy="0 0 0"/>
+      <parent link="gripper_base"/>
+      <child link="gripper_finger_left"/>
+      <axis xyz="1 0 0"/>
+      <limit effort="5.0" lower="0.0" upper="1.2" velocity="3.0"/>
+    </joint>
+    <!-- dedo opuesto (mimic) -->
+    <joint name="gripper_right" type="revolute">
+      <origin xyz="0.0 -0.018 0.01" rpy="0 0 0"/>
+      <parent link="gripper_base"/>
+      <child link="gripper_finger_right"/>
+      <axis xyz="1 0 0"/>
+      <limit effort="5.0" lower="-1.2" upper="0.0" velocity="3.0"/>
+      <mimic joint="gripper" multiplier="-1.0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="gripper_finger_primitive" params="side reflect">
+    <link name="gripper_finger_${side}">
+      <inertial>
+        <mass value="0.01"/>
+        <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 ${reflect*0.004} 0.02" rpy="0 0 0"/>
+        <geometry><box size="0.008 0.008 0.04"/></geometry>
+        <material name="red"/>
+      </visual>
+      <collision>
+        <origin xyz="0 ${reflect*0.004} 0.02" rpy="0 0 0"/>
+        <geometry><box size="0.008 0.008 0.04"/></geometry>
+      </collision>
+    </link>
+  </xacro:macro>
+
+  <!-- ===== MESHES ===== -->
+  <!-- Dedos con los STL reales (rescatados de twin_ws). El offset replica la
+       compensacion de marco global usada en twin (z negativo). Afinar en RViz. -->
+  <xacro:macro name="gripper_mesh" params="parent *origin grip_z:=-0.37">
+    <joint name="gripper" type="revolute">
+      <xacro:insert_block name="origin"/>
+      <parent link="${parent}"/>
+      <child link="gripper_finger_left"/>
+      <axis xyz="1 0 0"/>
+      <limit effort="5.0" lower="-0.13" upper="1.2" velocity="3.0"/>
+    </joint>
+    <link name="gripper_finger_left">
+      <inertial>
+        <mass value="0.02"/>
+        <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+      </inertial>
+      <visual>
+        <origin xyz="0.0 0.008 ${grip_z}" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://robotfun_description/meshes/gripper/left_gripper.stl"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <origin xyz="0.0 0.008 ${grip_z}" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://robotfun_description/meshes/gripper/left_gripper.stl"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <joint name="gripper_right" type="revolute">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <parent link="${parent}"/>
+      <child link="gripper_finger_right"/>
+      <axis xyz="1 0 0"/>
+      <limit effort="5.0" lower="-1.2" upper="0.13" velocity="3.0"/>
+      <mimic joint="gripper" multiplier="-1.0"/>
+    </joint>
+    <link name="gripper_finger_right">
+      <inertial>
+        <mass value="0.02"/>
+        <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+      </inertial>
+      <visual>
+        <origin xyz="0.0 -0.008 ${grip_z}" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://robotfun_description/meshes/gripper/right_gripper.stl"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <origin xyz="0.0 -0.008 ${grip_z}" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://robotfun_description/meshes/gripper/right_gripper.stl"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+      </collision>
+    </link>
+  </xacro:macro>
+
+</robot>
