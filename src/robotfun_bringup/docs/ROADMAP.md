@@ -4,9 +4,11 @@ El sistema actual (cinemática inversa + descripción + firmware) está diseñad
 para crecer sin romper lo existente. Orden sugerido de ampliaciones.
 
 ## Fase 1 — Cinemática inversa (HECHO)
-- Núcleo DH validado (FK, Jacobiano, IK DLS) con J4 fijo/activo.
-- URDF DH-exacto (TF == FK) + modelo de meshes reales para verificación.
-- Firmware ESP32 micro-ROS con las dos versiones de J4.
+- Núcleo DH 4 GDL validado: FK, Jacobiano, IK **analítica cerrada** + numéricas
+  (DLS / Newton / gradiente) y restricción de área de trabajo.
+- URDF que reproduce la FK (TF == FK): modelo de medidas reales (primitivas) +
+  modelo de piezas reales (meshes del CAD), misma interfaz de juntas.
+- Firmware ESP32 micro-ROS de 4 juntas + gripper (roll muerto a 90°).
 - Control suave (trapezoidal) y comprobación FK.
 
 **Validar:** `colcon build` → `ros2 launch robotfun_bringup bringup.launch.py` →
@@ -24,9 +26,7 @@ para crecer sin romper lo existente. Orden sugerido de ampliaciones.
 ## Fase 3 — MoveIt2 (planificación con colisiones)
 - Generar el paquete `robotfun_moveit/` con el **MoveIt Setup Assistant** a partir
   del modelo **primitivo** (es el que tiene colisiones limpias y TF == FK).
-- Grupos: `arm` (joint_1..joint_5) y `gripper`. Usar `config/joint_limits.yaml`.
-- En modo pick&place, opcionalmente fijar `joint_4` (planificación de 4 GDL),
-  coherente con la decisión de J4.
+- Grupos: `arm` (joint_1..joint_4) y `gripper`. Usar `config/joint_limits.yaml`.
 - Beneficio: planificación de trayectorias con evitación de colisiones y
   `MoveGroup` para pick & place.
 
@@ -38,7 +38,7 @@ para crecer sin romper lo existente. Orden sugerido de ampliaciones.
     estimación de pose del objeto → `geometry_msgs/PoseStamped` en `world`.
   - Salida: publica la pose del objeto que consume la cinemática / MoveIt2.
 - Integración: `perception → (pose objeto) → IK/MoveIt2 → trayectoria → firmware`.
-- Aquí **J4 activo** cobra sentido: alinear la pinza con la orientación detectada.
+- La cámara fija el objetivo (x,y,z) y el ángulo de aproximación φ de la pinza.
 
 ## Fase 5 — Orquestación pick & place
 - Máquina de estados (p. ej. `BehaviorTree.CPP` o un nodo de estados):
@@ -48,6 +48,6 @@ para crecer sin romper lo existente. Orden sugerido de ampliaciones.
 ## Principios para ampliar sin romper
 - No tocar la **fuente de verdad** (tabla DH en `core/dh_model.py`): regenerar el
   URDF si cambia (`scripts/generate_dh_origins.py`).
-- Mantener la **interfaz de juntas** (`joint_1..joint_5`, `gripper`) en todo nodo.
+- Mantener la **interfaz de juntas** (`joint_1..joint_4`, `gripper`) en todo nodo.
 - Añadir capacidades como **paquetes nuevos** (Open/Closed), no modificando el
   núcleo. Adaptadores ROS delgados sobre lógica pura testeable.

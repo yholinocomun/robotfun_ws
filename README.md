@@ -1,19 +1,20 @@
-# RobotFun — Brazo robótico 5 GDL + gripper (ROS 2)
+# RobotFun — Brazo robótico 4 GDL + gripper (ROS 2)
 
-Workspace de desarrollo del brazo **Pick & Place** de 5 grados de libertad (RRRRR)
-+ gripper, con realimentación por potenciómetros y servos accionados por
-**ESP32 + micro-ROS**. Objetivo inmediato: **cinemática inversa** robusta.
-Objetivo final: **pick & place de pastillas** guiado por cámara (QR/color).
+Workspace del brazo **Pick & Place** antropomórfico de **4 grados de libertad
+(yaw + 3 pitch) + gripper**, con realimentación por potenciómetros y servos
+accionados por **ESP32 + micro-ROS**. Objetivo inmediato: **cinemática inversa**
+robusta. Objetivo final: **pick & place de pastillas** guiado por cámara.
+
+> El roll de muñeca (antiguo joint_4) se **eliminó**; el antiguo joint_5 es ahora
+> **joint_4**. Estructura yaw–pitch–pitch–pitch → **IK analítica cerrada**.
 
 ## Paquetes
 | Paquete | Rol |
 |---------|-----|
-| `robotfun_description` | URDF/xacro: modelo **primitivo DH-exacto** (TF == FK) y modelo de **meshes reales** del CAD; RViz, límites, posición inicial. |
-| `robotfun_kinematics` | Núcleo **puro** (FK, Jacobiano, IK por DLS, trayectorias) + nodos ROS (IK, comprobación FK, control trapezoidal). |
-| `robotfun_firmware` | Firmware ESP32 micro-ROS (5 GDL + gripper), **dos versiones por `#define USE_JOINT4`** + launch del Agent. |
-| `robotfun_bringup` | Composition root (launch integradores) + `docs/ARCHITECTURE.md` y `docs/ROADMAP.md`. |
-
-Arquitectura y decisiones: ver **`robotfun_bringup/docs/ARCHITECTURE.md`**.
+| `robotfun_description` | URDF/xacro: modelo de **medidas reales** (primitivas, TF==FK) y de **piezas reales** (meshes del CAD); ambos con la misma interfaz de juntas. |
+| `robotfun_kinematics` | Núcleo **puro** (FK, Jacobiano, IK analítica + DLS/Newton/gradiente, workspace) + nodos ROS. |
+| `robotfun_firmware` | Firmware ESP32 micro-ROS (4 juntas + gripper; servo de roll muerto a 90°) + Agent. |
+| `robotfun_bringup` | Composition root + `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`. |
 
 ## Compilar
 ```bash
@@ -24,56 +25,74 @@ source install/setup.bash
 
 ## Ejecutar (sin hardware)
 ```bash
-# Visualizar el modelo canónico (primitivas) con sliders:
+# Modelo de MEDIDAS REALES (primitivas) — para verificar la cinemática:
 ros2 launch robotfun_description display.launch.py
-# Comparar con las piezas reales del CAD:
+# Modelo de PIEZAS REALES (meshes del CAD) — para ver tu hardware:
 ros2 launch robotfun_description display.launch.py model:=meshes
 
-# Sistema completo (descripción + cinemática):
-ros2 launch robotfun_bringup bringup.launch.py
-# Mandar un objetivo cartesiano (la IK calcula q y publica /joint_command):
-ros2 topic pub /target_pose geometry_msgs/msg/Pose "{position: {x: 0.12, y: -0.05, z: 0.18}}" --once
-# Ver la FK de comprobación:
-ros2 topic echo /fk_pose
+# Sistema completo (descripción + cinemática), controlador IK directo:
+ros2 launch robotfun_bringup bringup.launch.py controller:=ik
+# Mandar un objetivo de pick (la pinza apunta abajo por defecto):
+ros2 topic pub /target_pose geometry_msgs/msg/Pose "{position: {x: 0.18, y: 0.0, z: 0.08}}" --once
+ros2 topic echo /fk_pose         # comprobar TF==FK
 ```
 
 ## Con hardware (ESP32)
 ```bash
-# 1) Sube robotfun_firmware/firmware/robotfun_esp32_microros.ino (Arduino IDE).
-# 2) Arranca el Agent micro-ROS:
 ros2 launch robotfun_firmware microros_agent.launch.py dev:=/dev/ttyUSB0
-# 3) Cinemática + RViz (sin sliders: el ESP32 ya publica /joint_states):
-ros2 launch robotfun_bringup bringup.launch.py gui:=false
+ros2 launch robotfun_bringup bringup.launch.py gui:=false controller:=ik
 ```
 
-## Verificar el núcleo de cinemática (sin ROS)
+## Verificar el núcleo (sin ROS)
 ```bash
 cd ~/robotfun_ws/src/robotfun_kinematics
-python3 -m robotfun_kinematics.core.dh_model     # FK(HOME) y redundancia de J4
-python3 -m robotfun_kinematics.core.ik_solver    # roundtrip FK<->IK (J4 fijo/activo)
-pytest test/                                      # 7 tests
+python3 -m robotfun_kinematics.core.dh_model     # FK(HOME) vs URDF
+python3 -m robotfun_kinematics.core.ik_solver    # comparación de métodos de IK
+pytest test/                                      # tests del núcleo
 ```
 
 ---
 
-## Respuestas a las dos decisiones que pediste analizar
+## Cinemática inversa: métodos disponibles
+Para 4 GDL la tarea es **posición (x,y,z) + ángulo de aproximación φ**. Elige con
+`method:=...` (en `bringup` o `kinematics.launch.py`):
 
-### ¿J4 anulado o J4 activo? → **Empieza con J4 ANULADO (fijo) para el pick & place**
-J4 es un **roll del antebrazo**: en HOME su efecto sobre la posición de la punta
-es **nulo** y cerca de HOME **mal-condiciona** la IK; además J1+J2+J3 ya cubren la
-posición 3D y J5 el cabeceo de aproximación. Para coger pastillas (objetos
-axisimétricos) el giro de la pinza sobre su eje es irrelevante. Por eso la IK por
-defecto **congela J4** (4 GDL efectivos): mejor condicionada y sin deriva.
-La versión **J4 activo** (5 GDL) queda lista para cuando la **cámara** dé la
-orientación del objeto. Cambias de versión con:
-- alto nivel: `use_joint4:=true|false`
-- firmware: `#define USE_JOINT4 1|0`
+| método | cuándo usarlo |
+|--------|---------------|
+| **analytic** (por defecto) | **siempre que puedas**: exacta, instantánea, global. |
+| **dls** (Levenberg-Marquardt) | numérica robusta; buena cerca de singularidades. |
+| **newton** (Gauss-Newton) | numérica rápida; necesita buena semilla. |
+| **gradient** (Jacobiano transpuesto) | didáctica; converge lento. |
 
-El hardware **siempre** mantiene los 5 GDL + gripper; solo cambia el modo de IK.
+`φ` se da en grados con `approach_deg` (**−90 = pinza hacia abajo**, lo típico de
+pick & place). Los métodos numéricos son *locales*: en operación se siembran con
+la postura actual del robot (warm-start). La analítica no necesita semilla.
 
-### ¿Grados o radianes en el firmware? → **Radianes en el bus ROS; grados solo en el servo**
-ROS/RViz/MoveIt2 exigen **radianes** (REP-103, `sensor_msgs/JointState`). El servo
-se manda en grados (0..180), así que la conversión rad→grados ocurre
-**únicamente** en `servo.write()`. La **calibración** del firmware se expresa en
-grados/ADC (lo intuitivo del hardware). Así el sistema es interoperable con
-MoveIt2 y a la vez fácil de calibrar.
+## Cómo restringir el ÁREA DE TRABAJO (IK y pick & place)
+La zona segura se define en `core/workspace.py` (`WorkspaceLimits`) y la aplica el
+`ik_node`. Tres límites combinables:
+- **Caja cartesiana** `x/y/z` — la mesa/bandeja de pastillas.
+- **Alcance radial** `r_min..r_max` desde el hombro (máx ≈ 0.355 m; `r_min` evita
+  la singularidad central del eje de yaw).
+- **Altura mínima** `z_min` — no bajar de la superficie (no chocar la mesa).
+
+Ajústalos por parámetros al lanzar el `ik_node`, p. ej. una mesa de 25×30 cm:
+```bash
+ros2 run robotfun_kinematics ik_node --ros-args \
+  -p method:=analytic -p approach_deg:=-90.0 -p enforce_workspace:=true \
+  -p ws_x:="[0.10, 0.28]" -p ws_y:="[-0.15, 0.15]" -p ws_z:="[0.03, 0.20]"
+```
+Con `enforce_workspace:=true`, un objetivo fuera de la zona se **recorta** a ella
+(en vez de forzar una solución peligrosa); con `false` solo avisa. Para pick &
+place: pon `z_min` en la altura de la mesa y la caja `x/y` sobre la zona de
+pastillas; el `r_max` impide pedir puntos inalcanzables.
+
+---
+
+## Decisiones de diseño (resumen)
+- **J4 roll eliminado** → 4 GDL → IK **analítica cerrada** (lo más eficiente y exacto).
+- **Radianes en el bus ROS**, grados solo en `servo.write()` (calibración en grados).
+- **Dos modelos sin conflicto** (medidas reales / piezas reales), misma interfaz de
+  juntas, ambos TF==FK → uno verifica la IK y el otro visualiza el hardware.
+
+Detalle técnico completo en `src/robotfun_bringup/docs/ARCHITECTURE.md`.
