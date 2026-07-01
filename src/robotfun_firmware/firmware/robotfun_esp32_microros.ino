@@ -71,10 +71,32 @@ const float FEEDBACK_DIRECTION[NUM_CH] = { 1, 1, 1, 1, 1 };
 //   positivo de la convencion DH). Cambia 1 por -1 si gira al reves. CALIBRAR.
 const float SERVO_DIRECTION[NUM_CH] = { -1, -1, 1, 1, -1 };
 
-// Rango articular por canal (grados). Brazo ±90; gripper 0..70 (cierra/abre).
-const float JOINT_MIN_DEG[NUM_CH] = { -90, -90, -90, -90,  0 };
-const float JOINT_MAX_DEG[NUM_CH] = {  90,  90,  90,  90, 70 };
-const float SERVO_CENTER_DEG = 90.0f;
+// ===========================================================================
+//  RANGO Y CENTRO POR CANAL  ->  define el ESPACIO DE TRABAJO
+// ---------------------------------------------------------------------------
+// El servo da 180° FÍSICOS. servo_deg = SERVO_CENTER_DEG[i] + DIR*q_deg, saturado
+// a [0,180]. Por tanto el rango útil de q por junta = 180° REPARTIDOS según dónde
+// pongas el CENTRO:
+//   * SERVO_CENTER_DEG = 90  -> q ∈ [-90, +90]  (SIMÉTRICO, lo actual).
+//   * SERVO_CENTER_DEG = 60  -> q ∈ [-60, +120] (más rango HACIA ADELANTE).
+//   * SERVO_CENTER_DEG = 120 -> q ∈ [-120, +60] (más rango hacia atrás).
+// Para un brazo que trabaja sobre una mesa AL FRENTE conviene sesgar los PITCH
+// (joint_2/3) hacia adelante -> +50..70% de puntos alcanzables.
+//
+// IMPORTANTE: si cambias el centro, DEBES:
+//   (1) re-montar el horn del servo para que en HOME (brazo vertical) el servo
+//       quede en ese nuevo centro (p. ej. 60°), y volver a leer RAW_ZERO[i];
+//   (2) poner el MISMO rango asimétrico en robotfun_kinematics (dh_model.py,
+//       Q_MIN/Q_MAX) para que la IK no pida ángulos que el servo no da.
+// Deja el simétrico (90 / ±90) hasta validar mecánicamente que no hay colisión.
+// ===========================================================================
+// idx:                                   j1    j2    j3    j4   grip
+const float SERVO_CENTER_DEG[NUM_CH] = {  90,   90,   90,   90,   90 };
+const float JOINT_MIN_DEG[NUM_CH]    = { -90,  -90,  -90,  -90,    0 };
+const float JOINT_MAX_DEG[NUM_CH]    = {  90,   90,   90,   90,   70 };
+//  Ejemplo "más workspace al frente" (tras re-montar horns y ajustar Q_MIN/MAX):
+//  SERVO_CENTER_DEG = {90, 60, 60, 90, 90};
+//  JOINT_MIN_DEG    = {-90,-60,-60,-90, 0};  JOINT_MAX_DEG = {90,120,120,90,70};
 
 const float ADC_TO_DEG = 180.0f / 4095.0f;     // pot de 180° sobre 0..4095
 const float DEG2RAD = 0.017453292519943295f;
@@ -121,10 +143,10 @@ float adc_to_rad(int raw, int i) {
   return deg * DEG2RAD;
 }
 
-// radianes -> grados de servo (0..180). 0 rad => 90° (centro = HOME).
+// radianes -> grados de servo (0..180). 0 rad => SERVO_CENTER_DEG[i] (= HOME).
 int rad_to_servo_deg(float q_rad, int i) {
   float q_deg = clampf(q_rad * RAD2DEG, JOINT_MIN_DEG[i], JOINT_MAX_DEG[i]);
-  float servo_deg = SERVO_CENTER_DEG + SERVO_DIRECTION[i] * q_deg;
+  float servo_deg = SERVO_CENTER_DEG[i] + SERVO_DIRECTION[i] * q_deg;
   return (int)clampf(servo_deg, 0.0f, 180.0f);
 }
 

@@ -147,16 +147,24 @@ class DHChain:
         return float(self.a[3])      # HAND
 
 
+# Límites articulares POR JUNTA (rad). Deben coincidir con JOINT_MIN/MAX_DEG y
+# SERVO_CENTER_DEG del firmware. Por defecto ±90° (servo centrado). Para MÁS
+# espacio de trabajo se pueden hacer ASIMÉTRICOS (sesgar los pitch hacia adelante),
+# p. ej. Q_MIN=[-90,-60,-60,-90], Q_MAX=[90,120,120,90] (grados) tras re-montar
+# los horns de los servos y ajustar SERVO_CENTER_DEG en el firmware.
+Q_MIN_DEG = np.array([-90.0, -90.0, -90.0, -90.0])
+Q_MAX_DEG = np.array([90.0, 90.0, 90.0, 90.0])
+
+
 def build_default_robot() -> DHChain:
     """Construye la cadena DH validada del robot (4 GDL)."""
-    n = 4
     return DHChain(
         d=np.array([D1, 0.0, 0.0, 0.0]),
         a=np.array([L0, A2, A3, HAND]),
         alpha=np.array([pi / 2.0, 0.0, 0.0, 0.0]),
         theta_offset=np.array([TH1_OFF, TH2_OFF, TH3_OFF, TH4_OFF]),
-        q_min=np.array([-pi / 2.0] * n),   # servos saturados a ±90°
-        q_max=np.array([pi / 2.0] * n),
+        q_min=np.radians(Q_MIN_DEG),
+        q_max=np.radians(Q_MAX_DEG),
     )
 
 
