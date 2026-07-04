@@ -16,9 +16,21 @@
  *
  *  Pipeline:
  *    /joint_command (std_msgs/Float32MultiArray, RADIANES [q1,q2,q3,q4, gripper])
- *        --> mueve 5 servos
+ *        --> fija el OBJETIVO de cada junta
+ *    perfil trapezoidal por junta @50 Hz --> mueve los 5 servos SUAVEMENTE
  *    5 potenciometros --> /joint_states (sensor_msgs/JointState, RADIANES) @25 Hz
  *    joint_states.name = { joint_1, joint_2, joint_3, joint_4, joint_5 }
+ *
+ *  MOVIMIENTO SUAVE (todos los servos):
+ *    El comando NO se escribe de golpe al servo. Se guarda como OBJETIVO y un
+ *    perfil TRAPEZOIDAL por junta (velocidad + aceleracion limitadas) lo alcanza
+ *    en pasos de 20 ms. Se RE-PLANIFICA en cada tick, asi que admite objetivos
+ *    nuevos a mitad de trayecto sin saltos. Limites por junta en MAX_VEL/MAX_ACC.
+ *    Ley por junta y tick:
+ *        v_stop = sqrt(2*a_max*|objetivo-pos|)   (vel con la que aun se frena a 0)
+ *        v_des  = sign(err) * min(v_max, v_stop) (cruise o rampa de frenado)
+ *        v     += clamp(v_des - v, ±a_max*dt)    (rampa de aceleracion => suave)
+ *        pos   += v*dt                           (se escribe pos al servo)
  *
  *  UNIDADES: el bus ROS va en RADIANES (REP-103, JointState). La conversion a
  *  GRADOS de servo ocurre solo en servo.write(). La calibracion se expresa en
@@ -44,6 +56,8 @@
  *
  *      LED de estado: GPIO 13 (GPIO 2 es el servo j1).
  * ==========================================================================*/
+
+#include <math.h>
 
 #include <micro_ros_arduino.h>
 #include <ESP32Servo.h>
@@ -124,9 +138,36 @@ const float RAD2DEG = 57.29577951308232f;
 const float ALPHA = 0.15f;                      // filtro exponencial del ADC
 
 // ===========================================================================
+//  MOVIMIENTO SUAVE  ->  perfil trapezoidal por junta (vel + acel limitadas)
+// ---------------------------------------------------------------------------
+// El perfil corre a SERVO_UPDATE_HZ (mismo periodo que el PWM del servo: 50 Hz,
+// no tiene sentido escribir mas rapido que la trama de 20 ms). Limites POR JUNTA:
+//   MAX_VEL[i] rad/s   -> velocidad de crucero (que tan rapido va como maximo)
+//   MAX_ACC[i] rad/s^2 -> aceleracion (que tan suave arranca/frena; menor = mas suave)
+// Sugerencia: mantenlos POR ENCIMA de los limites del trajectory_node (v_max=0.6,
+// a_max=1.2) para que el firmware solo suavice saltos crudos y no frene la
+// trayectoria ya planificada; y POR DEBAJO del maximo fisico del servo. El gripper
+// (joint_5) suele querer respuesta mas rapida.
+#define SERVO_UPDATE_HZ 50
+const unsigned long SERVO_UPDATE_MS = 1000UL / SERVO_UPDATE_HZ;    // 20 ms
+// idx:                          j1     j2     j3     j4    j5(grip)
+const float MAX_VEL[NUM_CH] = { 1.5f,  1.5f,  1.5f,  1.5f,  3.0f };   // rad/s
+const float MAX_ACC[NUM_CH] = { 5.0f,  5.0f,  5.0f,  5.0f, 10.0f };   // rad/s^2
+// Umbrales de "llegada" para eliminar micro-oscilacion al fijar el objetivo:
+const float POS_EPS = 0.0035f;   // ~0.2 grados
+const float VEL_EPS = 0.02f;     // rad/s
+
+// ===========================================================================
 Servo servos[NUM_CH];
 float feedback_filtered[NUM_CH];
 bool  filter_initialized = false;
+
+// Estado del perfil de movimiento (rad, rad/s). target_pos lo fija /joint_command;
+// cur_pos es lo que se escribe al servo cada tick; cur_vel es la vel del perfil.
+float target_pos[NUM_CH];
+float cur_pos[NUM_CH];
+float cur_vel[NUM_CH];
+unsigned long last_motion_ms = 0;
 
 rcl_node_t node;
 rclc_support_t support;
@@ -173,7 +214,33 @@ void apply_servo_commands(const float *q_cmd) {
   for (int i = 0; i < NUM_CH; i++) servos[i].write(rad_to_servo_deg(q_cmd[i], i));
 }
 
+// Un paso del perfil trapezoidal por junta. Re-planifica cada tick (admite
+// objetivos nuevos a mitad de camino) y escribe la posicion suavizada al servo.
+void update_motion(float dt) {
+  for (int i = 0; i < NUM_CH; i++) {
+    float err = target_pos[i] - cur_pos[i];
+    // Velocidad maxima con la que AUN puedo frenar hasta 0 justo en el objetivo:
+    float v_stop = sqrtf(2.0f * MAX_ACC[i] * fabsf(err));
+    // Deseada: crucero salvo cuando toca frenar; con el signo del error.
+    float v_des = (err >= 0.0f ? 1.0f : -1.0f) * fminf(MAX_VEL[i], v_stop);
+    // Rampa de aceleracion: limita el cambio de velocidad por tick (=> suave).
+    float dv = v_des - cur_vel[i];
+    float dv_max = MAX_ACC[i] * dt;
+    if (dv >  dv_max) dv =  dv_max;
+    if (dv < -dv_max) dv = -dv_max;
+    cur_vel[i] += dv;
+    cur_pos[i] += cur_vel[i] * dt;
+    // "Snap" al llegar: evita micro-oscilacion alrededor del objetivo.
+    if (fabsf(target_pos[i] - cur_pos[i]) < POS_EPS && fabsf(cur_vel[i]) < VEL_EPS) {
+      cur_pos[i] = target_pos[i];
+      cur_vel[i] = 0.0f;
+    }
+    servos[i].write(rad_to_servo_deg(cur_pos[i], i));
+  }
+}
+
 // Callback de /joint_command (RADIANES, [q1..q4, gripper]; acepta >=4).
+// Solo fija el OBJETIVO; el perfil suave (update_motion) lo alcanza sin saltos.
 void command_callback(const void *msgin) {
   const std_msgs__msg__Float32MultiArray *msg =
       (const std_msgs__msg__Float32MultiArray *)msgin;
@@ -181,10 +248,9 @@ void command_callback(const void *msgin) {
   for (int i = 0; i < NUM_CH; i++) {
     if ((size_t)i < msg->data.size) {
       float lo = JOINT_MIN_DEG[i] * DEG2RAD, hi = JOINT_MAX_DEG[i] * DEG2RAD;
-      command_data[i] = clampf(msg->data.data[i], lo, hi);
-    }   // si no llega el gripper (size==4) conserva su ultimo valor
+      target_pos[i] = clampf(msg->data.data[i], lo, hi);
+    }   // si no llega el gripper (size==4) conserva su objetivo anterior
   }
-  apply_servo_commands(command_data);
 }
 
 void read_feedback() {
@@ -240,6 +306,7 @@ void setup() {
   for (int i = 0; i < NUM_CH; i++) {
     position_data[i] = velocity_data[i] = effort_data[i] = 0.0;
     command_data[i] = 0.0f; feedback_filtered[i] = 0.0f;
+    target_pos[i] = cur_pos[i] = cur_vel[i] = 0.0f;   // arranca en HOME, quieto
   }
 
   Serial.begin(115200);
@@ -283,10 +350,18 @@ void setup() {
   RCCHECK(rclc_executor_add_subscription(
       &executor, &joint_command_sub, &command_msg, &command_callback, ON_NEW_DATA));
 
+  last_motion_ms = millis();          // arranca el reloj del perfil de movimiento
   digitalWrite(STATUS_LED_PIN, LOW);
 }
 
 void loop() {
-  RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(20)));
-  delay(1);
+  // Atiende comandos entrantes (spin corto para no desfasar el tick de 20 ms).
+  RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(5)));
+  // Avanza el perfil trapezoidal a paso fijo (dt real => robusto a jitter).
+  unsigned long now = millis();
+  if (now - last_motion_ms >= SERVO_UPDATE_MS) {
+    float dt = (now - last_motion_ms) * 0.001f;
+    last_motion_ms = now;
+    update_motion(dt);
+  }
 }

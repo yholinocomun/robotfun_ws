@@ -76,6 +76,10 @@ en la singularidad central (r≈0, eje de yaw).
    RViz ◄─ robot_state_publisher ◄┴──────── /joint_states ◄───────────────┘ (pots, 25 Hz)
                 fk_check_node ─► /fk_pose (valida TF==FK)
 ```
+El ESP32 no salta al objetivo: cada `/joint_command` fija un objetivo y un **perfil
+trapezoidal por junta** (vel + acel limitadas, re-planificado @50 Hz) mueve los servos
+suavemente. Es un suavizado local que complementa al `trajectory_node` y protege el
+hardware aunque el comando llegue crudo. Detalle en `robotfun_firmware/README.md`.
 
 ## Regla de UNA sola fuente de /joint_states (evita el temblor/bucle en RViz)
 RViz "salta" si dos nodos publican `/joint_states` a la vez. `bringup.launch.py`

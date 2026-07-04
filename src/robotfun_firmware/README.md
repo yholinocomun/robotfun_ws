@@ -21,6 +21,28 @@ servos y publica la realimentación de 5 potenciómetros.
 > radianes (REP-103). La conversión rad→grados ocurre **únicamente** en
 > `servo.write()`. La **calibración** se expresa en grados/ADC (lo intuitivo del HW).
 
+## Movimiento suave (perfil trapezoidal por junta)
+El firmware **no** salta al objetivo cuando llega `/joint_command`: lo guarda como
+objetivo y un **perfil trapezoidal por junta** (velocidad + aceleración limitadas)
+lo alcanza en pasos de 20 ms (50 Hz, igual que el PWM del servo). Se **re-planifica
+en cada tick**, así que admite objetivos nuevos a mitad de trayecto sin discontinuidades.
+Ley por junta y tick:
+```
+v_stop = sqrt(2·a_max·|objetivo−pos|)      # vel con la que aún se frena a 0 en el objetivo
+v_des  = signo(err)·min(v_max, v_stop)     # crucero o rampa de frenado
+v     += clamp(v_des − v, ±a_max·dt)       # rampa de aceleración => arranque/frenado suave
+pos   += v·dt                              # se escribe pos al servo
+```
+Ajusta por canal en el `.ino` (`rad/s`, `rad/s²`); menor `MAX_ACC` = más suave:
+```cpp
+const float MAX_VEL[NUM_CH] = { 1.5f, 1.5f, 1.5f, 1.5f, 3.0f };   // crucero
+const float MAX_ACC[NUM_CH] = { 5.0f, 5.0f, 5.0f, 5.0f, 10.0f };  // aceleración
+```
+> Mantén estos límites **por encima** de los del `trajectory_node` (v_max=0.6,
+> a_max=1.2) para que el firmware solo suavice saltos crudos y no frene la
+> trayectoria ya planificada; y **por debajo** del máximo físico del servo.
+> Verificado por simulación: vel/acel respetan el límite y no hay overshoot.
+
 ## Pines (5 canales) — reasignados tras quitar el roll
 | Canal | Junta | Servo (PWM) | Pot (ADC) |
 |------:|-------|-------------|-----------|
