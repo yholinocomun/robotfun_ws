@@ -62,11 +62,19 @@ const int POT_PINS[NUM_CH]   = { 32, 33, 34, 35, 27 };
 const char *JOINT_LABEL[NUM_CH] = { "joint_1", "joint_2", "joint_3", "joint_4", "joint_5" };
 
 // ===========================================================================
-//  MAPEO DE SERVO (grados). servo_deg = CENTER + DIR*q_deg, saturado a [0,180].
-//  SERVO_DIRECTION confirmado {1,-1,1,-1,1}. Si el gripper gira al reves, pon [4]=-1.
+//  MAPEO DE SERVO (grados). PARAMETROS POR SERVO (offsets/sentido/centro/limites):
+//    servo_deg = SERVO_CENTER_DEG[i] + SERVO_OFFSET_DEG[i] + SERVO_DIRECTION[i]*q_deg
+//    (saturado a [0,180]).  q=0 (HOME) -> el servo queda en CENTER+OFFSET.
+//  - SERVO_DIRECTION[i]: sentido de giro. Confirmado {1,-1,1,-1,1}. Si el gripper
+//    gira al reves, pon [4]=-1.
+//  - SERVO_CENTER_DEG[i]: donde queda el servo en HOME (normalmente 90).
+//  - SERVO_OFFSET_DEG[i]: TRIM fino por servo (grados). Ajusta aqui cada servo si
+//    su HOME no queda perfecto, SIN recalibrar los pots. Ej.: {2,-3,0,1,0}.
+//  - JOINT_MIN/MAX_DEG[i]: limites articulares por junta.
 // ===========================================================================
 const int   SERVO_DIRECTION[NUM_CH]  = {  1, -1,  1, -1,  1 };
 const float SERVO_CENTER_DEG[NUM_CH] = { 90, 90, 90, 90, 90 };
+const float SERVO_OFFSET_DEG[NUM_CH] = {  0,  0,  0,  0,  0 };   // trim fino por servo
 const float JOINT_MIN_DEG[NUM_CH]    = { -90, -90, -90, -90,  0 };
 const float JOINT_MAX_DEG[NUM_CH]    = {  90,  90,  90,  90, 70 };
 const int   SERVO_US_MIN = 500;      // us a 0 grados   (coincide con attach)
@@ -149,7 +157,7 @@ float clampf(float x, float lo, float hi) { return x < lo ? lo : (x > hi ? hi : 
 // grados de junta q -> microsegundos PWM (float -> resolucion fina => fluido).
 int deg_to_us(float q_deg, int i) {
   q_deg = clampf(q_deg, JOINT_MIN_DEG[i], JOINT_MAX_DEG[i]);
-  float servo_deg = SERVO_CENTER_DEG[i] + SERVO_DIRECTION[i] * q_deg;
+  float servo_deg = SERVO_CENTER_DEG[i] + SERVO_OFFSET_DEG[i] + SERVO_DIRECTION[i] * q_deg;
   servo_deg = clampf(servo_deg, 0.0f, 180.0f);
   return (int)(SERVO_US_MIN + servo_deg * (float)(SERVO_US_MAX - SERVO_US_MIN) / 180.0f);
 }
