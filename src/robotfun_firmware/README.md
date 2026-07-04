@@ -3,30 +3,41 @@
 Bajo nivel del brazo de **4 GDL + gripper** (yaw + 3 pitch). El ESP32 mueve 5
 servos y publica la realimentación de 5 potenciómetros.
 
-> **Cambio importante:** el joint_4 de **roll se eliminó**. El antiguo joint_5
-> (pitch de muñeca) es ahora **joint_4**. El servo del roll, si sigue montado, se
-> deja **fijo a 90°** (muerto) — pin `DEAD_ROLL_PIN` (18); ponlo en `-1` si ya no está.
+> **Reestructuración:** el proyecto se reorganiza como si el robot SIEMPRE hubiese
+> tenido **5 actuadores** `joint_1..joint_5`. El antiguo roll de muñeca desaparece
+> por completo (sin servo muerto ni canal reservado); `joint_4` es el pitch de
+> muñeca (antiguo joint_5) y `joint_5` es el **gripper** (antiguo gripper). Al
+> quitar el roll, sus pines se reasignan: se **revive** el pot 35 (ahora joint_4),
+> **continúa** el 27 (ahora gripper) y se **anula** el 26. En paralelo el servo
+> revive el 18 (joint_4), continúa el 19 (gripper) y anula el 21.
 
 ## Interfaz ROS
 | Tópico | Tipo | Sentido | Unidades |
 |--------|------|---------|----------|
 | `/joint_command` | `std_msgs/Float32MultiArray` | PC → ESP32 | **radianes** `[q1,q2,q3,q4, gripper]` |
-| `/joint_states`  | `sensor_msgs/JointState`     | ESP32 → PC | **radianes**, 25 Hz |
+| `/joint_states`  | `sensor_msgs/JointState`     | ESP32 → PC | **radianes**, 25 Hz, nombres `joint_1..joint_5` |
 
 > **Radianes en el bus, grados solo en el servo.** ROS/RViz/MoveIt2 exigen
 > radianes (REP-103). La conversión rad→grados ocurre **únicamente** en
 > `servo.write()`. La **calibración** se expresa en grados/ADC (lo intuitivo del HW).
 
-## Pines (5 canales)
+## Pines (5 canales) — reasignados tras quitar el roll
 | Canal | Junta | Servo (PWM) | Pot (ADC) |
 |------:|-------|-------------|-----------|
 | 0 | joint_1 | GPIO 2  | GPIO 32 |
 | 1 | joint_2 | GPIO 4  | GPIO 33 |
 | 2 | joint_3 | GPIO 5  | GPIO 34 (solo IN) |
-| 3 | joint_4 | GPIO 19 | GPIO 27 (ADC2) |
-| 4 | gripper | GPIO 21 | GPIO 26 (ADC2) |
+| 3 | joint_4 | GPIO 18 | GPIO 35 (solo IN) |
+| 4 | joint_5 (gripper) | GPIO 19 | GPIO 27 (ADC2) |
 
-Roll eliminado: servo en GPIO 18 fijo a 90°. LED de estado en GPIO 13.
+Diseño original de 6 canales (referencia del cambio): `SERVO={2,4,5,18,19,21}`,
+`POT={32,33,34,35,27,26}`. Se elimina el roll (idx 3) y todo se desplaza: el pot
+**revive 35** (joint_4), **continúa 27** (gripper) y **anula 26**; el servo revive
+18, continúa 19 y anula 21. LED de estado en GPIO 13.
+
+> El usuario fijó explícitamente los **pines de pot** `{32,33,34,35,27}`. Los de
+> servo `{2,4,5,18,19}` siguen el mismo criterio; si tu cableado físico de servos
+> no cambió (siguen en `{2,4,5,19,21}`), ajústalo en `SERVO_PINS[]` del `.ino`.
 
 ## Calibración
 1. Coloca el robot en **HOME** (todas las juntas a 0°, brazo vertical).

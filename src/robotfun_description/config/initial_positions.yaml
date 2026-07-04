@@ -5,4 +5,4 @@ initial_positions:
   joint_2: 0.0
   joint_3: 0.0
   joint_4: 0.0
-  gripper: 0.0
+  joint_5: 0.0

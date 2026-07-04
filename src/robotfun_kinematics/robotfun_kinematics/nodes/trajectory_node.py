@@ -26,7 +26,7 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
 
 from robotfun_kinematics.core import (
-    ARM_JOINT_NAMES, N_JOINTS, ROBOT, WorkspaceLimits, clamp_target,
+    ARM_JOINT_NAMES, GRIPPER_JOINT_NAME, N_JOINTS, ROBOT, WorkspaceLimits, clamp_target,
 )
 from robotfun_kinematics.core.trajectory import joint_trajectory, trapezoidal_profile
 
@@ -69,8 +69,8 @@ class TrajectoryNode(Node):
             for i, jn in enumerate(ARM_JOINT_NAMES):
                 if jn in name_to_pos:
                     self.q_arm[i] = name_to_pos[jn]
-            if "gripper" in name_to_pos:
-                self.gripper = name_to_pos["gripper"]
+            if GRIPPER_JOINT_NAME in name_to_pos:
+                self.gripper = name_to_pos[GRIPPER_JOINT_NAME]
             self.have_feedback = True
 
     def joint_goal_cb(self, msg: Float32MultiArray):

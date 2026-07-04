@@ -3,15 +3,22 @@
  *  ---------------------------------------------------------------------------
  *  BAJO NIVEL (micro-ROS) del brazo de 4 GDL (yaw + 3 pitch) + GRIPPER.
  *
- *  CAMBIO: el JOINT 4 de roll (muñeca giratoria) se ELIMINÓ por completo. El
- *  antiguo joint_5 (pitch de muñeca) es ahora el nuevo joint_4. Quedan 4 juntas
- *  de brazo + gripper = 5 canales. El servo del roll, si sigue montado, se deja
- *  FIJO a 90° (muerto) para que no se mueva.
+ *  REESTRUCTURACION: el proyecto se reorganiza como si el robot SIEMPRE hubiese
+ *  tenido CINCO actuadores (sin el antiguo roll de muñeca). Las juntas quedan:
+ *      joint_1  yaw de la base
+ *      joint_2  pitch del hombro
+ *      joint_3  pitch del codo
+ *      joint_4  pitch de la muñeca      (físicamente el ANTIGUO joint_5)
+ *      joint_5  GRIPPER                 (físicamente el ANTIGUO gripper)
+ *  El antiguo joint_4 de ROLL desaparece por completo: no hay servo muerto ni
+ *  canal reservado; su pin se re-asigna (ver más abajo). El bus ROS transporta
+ *  los 5 canales [q1,q2,q3,q4, gripper] sin ningún hueco.
  *
  *  Pipeline:
  *    /joint_command (std_msgs/Float32MultiArray, RADIANES [q1,q2,q3,q4, gripper])
  *        --> mueve 5 servos
  *    5 potenciometros --> /joint_states (sensor_msgs/JointState, RADIANES) @25 Hz
+ *    joint_states.name = { joint_1, joint_2, joint_3, joint_4, joint_5 }
  *
  *  UNIDADES: el bus ROS va en RADIANES (REP-103, JointState). La conversion a
  *  GRADOS de servo ocurre solo en servo.write(). La calibracion se expresa en
@@ -19,12 +26,22 @@
  *
  *  HOME: todas las juntas a 0 rad => servos a 90 grados (brazo vertical).
  *
- *  PINES (4 brazo + gripper):
- *      idx :   0     1     2     3       4
- *      junta:  j1    j2    j3    j4    gripper
- *      SERVO:  2     4     5     19      21
- *      POT  :  32    33    34    27      26     (34 solo IN; 27/26 ADC2 OK con serial)
- *      Servo de ROLL eliminado: GPIO 18, mantenido fijo a 90°.
+ *  PINES (5 canales: 4 brazo + gripper) — REASIGNADOS tras quitar el roll:
+ *      idx :   0     1     2       3          4
+ *      junta:  j1    j2    j3    j4(pitch)  j5(gripper)
+ *      SERVO:  2     4     5     18         19
+ *      POT  :  32    33    34    35         27       (34 solo IN; 27 ADC2 OK con serial)
+ *
+ *  Diseño original de 6 canales (para referencia del cambio de pines):
+ *      SERVO = {2, 4, 5, 18, 19, 21}   POT = {32, 33, 34, 35, 27, 26}
+ *      (idx 3 era el ROLL; idx 4 el pitch; idx 5 el gripper)
+ *  Al eliminar el roll se "revive" su pin y todo se desplaza una posición atrás:
+ *      POT  : se REVIVE 35 (ahora j4), CONTINÚA con 27 (ahora gripper), se ANULA 26.
+ *      SERVO: en paralelo se revive 18 (ahora j4), continúa 19 (gripper), se anula 21.
+ *  NOTA: el usuario fijó explícitamente los PINES DE POT {32,33,34,35,27}. Los de
+ *  SERVO siguen el mismo criterio {2,4,5,18,19}. Si tu cableado FÍSICO de servos
+ *  no cambió (siguen en {2,4,5,19,21}), ajústalo aquí en SERVO_PINS[].
+ *
  *      LED de estado: GPIO 13 (GPIO 2 es el servo j1).
  * ==========================================================================*/
 
@@ -40,36 +57,38 @@
 #include <std_msgs/msg/float32_multi_array.h>
 
 #define STATUS_LED_PIN 13
-#define NUM_CH         5          // 4 juntas de brazo + 1 gripper
-#define GRIPPER_INDEX  4
+#define NUM_CH         5          // joint_1..joint_4 (brazo) + joint_5 (gripper)
+#define GRIPPER_INDEX  4          // joint_5 = gripper
 
-// Servo del roll eliminado: se deja fijo a 90° (muerto). Si ya no está montado,
-// pon DEAD_ROLL_PIN en -1 para ignorarlo.
-#define DEAD_ROLL_PIN  18
+// Pines re-asignados (ver cabecera). El roll ya no existe: su pin de servo (18) y
+// de pot (35) pasan a ser los de joint_4.
+const int SERVO_PINS[NUM_CH] = {  2,  4,  5, 18, 19 };
+const int POT_PINS[NUM_CH]   = { 32, 33, 34, 35, 27 };
 
-const int SERVO_PINS[NUM_CH] = {  2,  4,  5, 19, 21 };
-const int POT_PINS[NUM_CH]   = { 32, 33, 34, 27, 26 };
-
-const char *JOINT_LABEL[NUM_CH] = { "joint_1", "joint_2", "joint_3", "joint_4", "gripper" };
+const char *JOINT_LABEL[NUM_CH] = { "joint_1", "joint_2", "joint_3", "joint_4", "joint_5" };
 
 // ===========================================================================
 //  CALIBRACION (grados / cuentas ADC). Ajustar en pruebas.
+// ---------------------------------------------------------------------------
+//  Se CONSERVA la calibración ya realizada. El índice físico de cada junta NO
+//  cambió (j1,j2,j3, el pitch de muñeca y el gripper siguen en el mismo orden);
+//  solo se re-etiquetó el gripper como joint_5 y se re-asignaron sus pines.
 // ===========================================================================
 // RAW_ZERO[i]: ADC (0..4095) de cada pot en HOME (todas las juntas a 0 rad).
 int RAW_ZERO[NUM_CH] = {
-  1194,   // joint_1
-  1165,   // joint_2
-  1191,   // joint_3
-  1423,   // joint_4  (antiguo joint_5, pitch de muñeca)
-  1300    // gripper
+  1267,   // joint_1
+  1232,   // joint_2
+  1265,   // joint_3
+  1405,   // joint_4  (pitch de muñeca; antiguo joint_5)
+  1302    // joint_5  (gripper)
 };
 
 // FEEDBACK_DIRECTION[i]: sentido del pot hacia RViz (-1 si sale invertido).
-const float FEEDBACK_DIRECTION[NUM_CH] = { 1, 1, 1, 1, 1 };
+const float FEEDBACK_DIRECTION[NUM_CH] = { 1, 1, -1, -1, 1 };
 
 // SERVO_DIRECTION[i]: sentido del servo respecto al comando (+q en el sentido
 //   positivo de la convencion DH). Cambia 1 por -1 si gira al reves. CALIBRAR.
-const float SERVO_DIRECTION[NUM_CH] = { -1, -1, 1, 1, -1 };
+const float SERVO_DIRECTION[NUM_CH] = { 1, -1, 1, -1, 1 };
 
 // ===========================================================================
 //  RANGO Y CENTRO POR CANAL  ->  define el ESPACIO DE TRABAJO
@@ -89,8 +108,9 @@ const float SERVO_DIRECTION[NUM_CH] = { -1, -1, 1, 1, -1 };
 //   (2) poner el MISMO rango asimétrico en robotfun_kinematics (dh_model.py,
 //       Q_MIN/Q_MAX) para que la IK no pida ángulos que el servo no da.
 // Deja el simétrico (90 / ±90) hasta validar mecánicamente que no hay colisión.
+// El gripper (joint_5) usa su propio rango de apertura [0, 70]°.
 // ===========================================================================
-// idx:                                   j1    j2    j3    j4   grip
+// idx:                                   j1    j2    j3    j4   j5(grip)
 const float SERVO_CENTER_DEG[NUM_CH] = {  90,   90,   90,   90,   90 };
 const float JOINT_MIN_DEG[NUM_CH]    = { -90,  -90,  -90,  -90,    0 };
 const float JOINT_MAX_DEG[NUM_CH]    = {  90,   90,   90,   90,   70 };
@@ -105,7 +125,6 @@ const float ALPHA = 0.15f;                      // filtro exponencial del ADC
 
 // ===========================================================================
 Servo servos[NUM_CH];
-Servo dead_roll_servo;
 float feedback_filtered[NUM_CH];
 bool  filter_initialized = false;
 
@@ -120,7 +139,7 @@ rcl_timer_t timer;
 sensor_msgs__msg__JointState joint_state_msg;
 std_msgs__msg__Float32MultiArray command_msg;
 
-static char joint_name_buf[NUM_CH][12] = { "joint_1", "joint_2", "joint_3", "joint_4", "gripper" };
+static char joint_name_buf[NUM_CH][12] = { "joint_1", "joint_2", "joint_3", "joint_4", "joint_5" };
 static rosidl_runtime_c__String joint_names[NUM_CH];
 static double position_data[NUM_CH];
 static double velocity_data[NUM_CH];
@@ -239,11 +258,6 @@ void setup() {
     servos[i].setPeriodHertz(50);
     servos[i].attach(SERVO_PINS[i], 500, 2400);
   }
-#if (DEAD_ROLL_PIN >= 0)
-  dead_roll_servo.setPeriodHertz(50);
-  dead_roll_servo.attach(DEAD_ROLL_PIN, 500, 2400);
-  dead_roll_servo.write(90);          // roll eliminado: fijo a 90° (muerto)
-#endif
 
   float q_home[NUM_CH] = {0, 0, 0, 0, 0};
   apply_servo_commands(q_home);

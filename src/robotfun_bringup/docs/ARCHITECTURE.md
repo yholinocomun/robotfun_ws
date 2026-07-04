@@ -5,8 +5,9 @@ con realimentación por potenciómetros y servos accionados por **ESP32 + micro-
 integrado en **ROS 2**. Objetivo inmediato: **cinemática inversa** robusta.
 Objetivo final: **pick & place de pastillas** guiado por cámara (QR/color).
 
-> El roll de muñeca (antiguo joint_4) se **eliminó**; el antiguo joint_5 es ahora
-> joint_4. Un brazo yaw+3·pitch tiene **IK analítica cerrada** (la más eficiente).
+> El roll de muñeca (antiguo joint_4) se **eliminó**; el proyecto se reorganiza
+> como **5 actuadores** `joint_1..joint_5` (joint_4 = pitch de muñeca, joint_5 =
+> gripper). Un brazo yaw+3·pitch tiene **IK analítica cerrada** (la más eficiente).
 
 ## Principios de diseño
 - **Clean Architecture / Dependency Inversion**: núcleo de cinemática Python
@@ -14,14 +15,14 @@ Objetivo final: **pick & place de pastillas** guiado por cámara (QR/color).
 - **SOLID / DRY**: la tabla DH vive en UN sitio (`core/dh_model.py`); el URDF
   reproduce esa FK (TF == FK a 1e-16); los dos modelos comparten un único
   esqueleto (`urdf/common/arm.macro.xacro`).
-- **Interfaz de juntas única** (`joint_1..joint_4`, `gripper`) en descripción,
-  cinemática y firmware.
+- **Interfaz de juntas única** (`joint_1..joint_5`, donde `joint_5` = el gripper)
+  en descripción, cinemática y firmware.
 
 ## Paquetes
 ```
 robotfun_description/   URDF/xacro: medidas reales (primitivas) + piezas reales (meshes)
 robotfun_kinematics/    núcleo puro (FK, Jacobiano, IK analítica+numérica, workspace) + nodos
-robotfun_firmware/      ESP32 micro-ROS (4 juntas + gripper; roll muerto a 90°) + Agent
+robotfun_firmware/      ESP32 micro-ROS (5 actuadores joint_1..joint_5; roll eliminado) + Agent
 robotfun_bringup/       composition root (launch integradores) + docs
 ```
 
@@ -70,7 +71,7 @@ en la singularidad central (r≈0, eje de yaw).
 ## Flujo de datos
 ```
    /target_pose ─► ik_node (IK) ─┐
-   /joint_goal  ─► trajectory ───┼─► /joint_command [q1..q4,gripper] ─► ESP32 ─► servos
+   /joint_goal  ─► trajectory ───┼─► /joint_command [q1..q4,joint_5] ─► ESP32 ─► servos
                                   │                                       │
    RViz ◄─ robot_state_publisher ◄┴──────── /joint_states ◄───────────────┘ (pots, 25 Hz)
                 fk_check_node ─► /fk_pose (valida TF==FK)

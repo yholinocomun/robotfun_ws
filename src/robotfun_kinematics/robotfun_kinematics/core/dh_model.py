@@ -62,9 +62,10 @@ TH2_OFF = pi / 2.0
 TH3_OFF = 0.0
 TH4_OFF = 0.0
 
-#: Nombres canónicos (deben coincidir con el URDF y el firmware).
+#: Nombres canónicos (deben coincidir con el URDF y el firmware). El robot se
+#: reorganizó como 5 actuadores joint_1..joint_5, donde joint_5 = el gripper.
 ARM_JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4"]
-GRIPPER_JOINT_NAME = "gripper"
+GRIPPER_JOINT_NAME = "joint_5"
 
 
 def dh(d: float, theta: float, a: float, alpha: float) -> np.ndarray:

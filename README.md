@@ -13,7 +13,7 @@ robusta. Objetivo final: **pick & place de pastillas** guiado por cámara.
 |---------|-----|
 | `robotfun_description` | URDF/xacro: modelo de **medidas reales** (primitivas, TF==FK) y de **piezas reales** (meshes del CAD); ambos con la misma interfaz de juntas. |
 | `robotfun_kinematics` | Núcleo **puro** (FK, Jacobiano, IK analítica + DLS/Newton/gradiente, workspace) + nodos ROS. |
-| `robotfun_firmware` | Firmware ESP32 micro-ROS (4 juntas + gripper; servo de roll muerto a 90°) + Agent. |
+| `robotfun_firmware` | Firmware ESP32 micro-ROS (5 actuadores `joint_1..joint_5`, joint_5 = gripper; roll eliminado) + Agent. |
 | `robotfun_bringup` | Composition root + `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`. |
 
 ## Compilar

@@ -1,17 +1,15 @@
 <?xml version="1.0"?>
 <!-- ============================================================================
      gripper.macro.xacro
-     Dos macros, sin el cubo anterior:
-       * gripper_primitive : gripper de 1 GDL (canal 6) con dedos finos de caja;
-         se mueve (joint "gripper") para el modelo de medidas reales.
-       * gripper_mesh_fused: el gripper real (STL de twin_ws) FUSIONADO y FIJO al
-         eslabón de la muñeca → "un solo eslabón" con link_4. Sin cubo, sin flotar.
+       * gripper_primitive : gripper de 1 GDL con dedos finos de caja; se mueve con
+         el joint "joint_5" (el 5º actuador, físicamente el gripper) para el modelo
+         de medidas reales. Sin el cubo anterior.
      ========================================================================== -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!-- ===== PRIMITIVO (móvil) ===== -->
   <xacro:macro name="gripper_primitive" params="parent *origin">
-    <joint name="gripper" type="revolute">
+    <joint name="joint_5" type="revolute">
       <xacro:insert_block name="origin"/>
       <parent link="${parent}"/><child link="gripper_finger_left"/>
       <axis xyz="0 1 0"/>
@@ -26,12 +24,12 @@
         <material name="red"/>
       </visual>
     </link>
-    <joint name="gripper_right" type="revolute">
+    <joint name="joint_5_right" type="revolute">
       <xacro:insert_block name="origin"/>
       <parent link="${parent}"/><child link="gripper_finger_right"/>
       <axis xyz="0 1 0"/>
       <limit effort="5.0" lower="-0.6" upper="0.0" velocity="2.0"/>
-      <mimic joint="gripper" multiplier="-1.0"/>
+      <mimic joint="joint_5" multiplier="-1.0"/>
     </joint>
     <link name="gripper_finger_right">
       <inertial><mass value="0.01"/>

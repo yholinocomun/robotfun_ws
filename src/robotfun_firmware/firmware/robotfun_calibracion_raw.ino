@@ -13,15 +13,16 @@
  *       principal (robotfun_esp32_microros.ino), en el MISMO orden.
  *    5) Vuelve a subir el firmware principal.
  *
- *  Pines de los pots (igual que el firmware principal):
- *      idx :   0     1     2     3       4
- *      junta:  j1    j2    j3    j4    gripper
- *      POT  :  32    33    34    27      26
+ *  Pines de los pots (igual que el firmware principal, tras reasignar pines):
+ *      idx :   0     1     2       3          4
+ *      junta:  j1    j2    j3    j4(pitch)  j5(gripper)
+ *      POT  :  32    33    34    35         27
+ *  (se REVIVIÓ el pin 35 para j4, CONTINÚA con 27 para el gripper, se ANULÓ 26)
  * ==========================================================================*/
 
 const int NUM_CH = 5;
-const int POT_PINS[NUM_CH] = { 32, 33, 34, 27, 26 };
-const char *LABEL[NUM_CH]  = { "joint_1", "joint_2", "joint_3", "joint_4", "gripper" };
+const int POT_PINS[NUM_CH] = { 32, 33, 34, 35, 27 };
+const char *LABEL[NUM_CH]  = { "joint_1", "joint_2", "joint_3", "joint_4", "joint_5" };
 
 // Filtro de media móvil para una lectura estable
 const int FILT = 20;

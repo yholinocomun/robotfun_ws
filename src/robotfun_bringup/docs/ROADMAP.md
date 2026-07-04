@@ -8,7 +8,8 @@ para crecer sin romper lo existente. Orden sugerido de ampliaciones.
   (DLS / Newton / gradiente) y restricción de área de trabajo.
 - URDF que reproduce la FK (TF == FK): modelo de medidas reales (primitivas) +
   modelo de piezas reales (meshes del CAD), misma interfaz de juntas.
-- Firmware ESP32 micro-ROS de 4 juntas + gripper (roll muerto a 90°).
+- Firmware ESP32 micro-ROS de 5 actuadores `joint_1..joint_5` (joint_5 = gripper;
+  el antiguo roll se eliminó por completo y sus pines se reasignaron).
 - Control suave (trapezoidal) y comprobación FK.
 
 **Validar:** `colcon build` → `ros2 launch robotfun_bringup bringup.launch.py` →
@@ -19,14 +20,14 @@ para crecer sin romper lo existente. Orden sugerido de ampliaciones.
   `urdf/gazebo.xacro` (plugin `gz_ros2_control`) **como includes opcionales** del
   modelo primitivo (que ya trae `<collision>` e `<inertial>`).
 - `robotfun_controller/` con `controllers.yaml`
-  (`joint_trajectory_controller` para el brazo, `gripper` aparte) y
-  `joint_state_broadcaster`.
+  (`joint_trajectory_controller` para el brazo joint_1..joint_4, `joint_5`/gripper
+  aparte) y `joint_state_broadcaster`.
 - Beneficio: probar la IK y las trayectorias sin hardware, con física y colisiones.
 
 ## Fase 3 — MoveIt2 (planificación con colisiones)
 - Generar el paquete `robotfun_moveit/` con el **MoveIt Setup Assistant** a partir
   del modelo **primitivo** (es el que tiene colisiones limpias y TF == FK).
-- Grupos: `arm` (joint_1..joint_4) y `gripper`. Usar `config/joint_limits.yaml`.
+- Grupos: `arm` (joint_1..joint_4) y `gripper` (joint_5). Usar `config/joint_limits.yaml`.
 - Beneficio: planificación de trayectorias con evitación de colisiones y
   `MoveGroup` para pick & place.
 
@@ -48,6 +49,6 @@ para crecer sin romper lo existente. Orden sugerido de ampliaciones.
 ## Principios para ampliar sin romper
 - No tocar la **fuente de verdad** (tabla DH en `core/dh_model.py`): regenerar el
   URDF si cambia (`scripts/generate_dh_origins.py`).
-- Mantener la **interfaz de juntas** (`joint_1..joint_4`, `gripper`) en todo nodo.
+- Mantener la **interfaz de juntas** (`joint_1..joint_5`, joint_5 = gripper) en todo nodo.
 - Añadir capacidades como **paquetes nuevos** (Open/Closed), no modificando el
   núcleo. Adaptadores ROS delgados sobre lógica pura testeable.
