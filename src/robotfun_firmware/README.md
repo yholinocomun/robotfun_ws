@@ -61,6 +61,22 @@ Diseño original de 6 canales (referencia del cambio): `SERVO={2,4,5,18,19,21}`,
 > servo `{2,4,5,18,19}` siguen el mismo criterio; si tu cableado físico de servos
 > no cambió (siguen en `{2,4,5,19,21}`), ajústalo en `SERVO_PINS[]` del `.ino`.
 
+## ¿El brazo va al ángulo y REGRESA solo a HOME (ida y vuelta)?
+El firmware es **lazo abierto**: llega al objetivo y se queda. No puede rebotar
+solo. Si rebota a HOME en bucle es porque el **ESP32 se está reiniciando** (en cada
+reset, `setup()` recolocaba los servos) — casi siempre por **BROWNOUT** (caída de
+tensión al mover los servos). El firmware ahora lo detecta y lo mitiga:
+
+- **Diagnóstico** (sin cables extra): `ros2 topic echo /joint_states` y mira `effort`:
+  - `effort[0]` = nº de arranques. **Si sube solo, el ESP32 se está reseteando.**
+  - `effort[1]` = motivo del último reset: `1`=power-on, `6`=task-WDT, **`9`=BROWNOUT**.
+- **Anti-bucle**: al arrancar restaura el último objetivo (memoria RTC), no fuerza
+  HOME → el brazo se queda donde estaba y deja de rebotar.
+- **Arreglo de raíz (si `effort[1]==9`)**: alimenta los servos con una **fuente
+  externa 5–6 V** (no desde el ESP32/USB), **GND común**, y un **condensador de
+  1000 µF+** cerca de los servos. También revisa que `ros2 topic info /joint_command
+  --verbose` muestre **1 solo publicador** y usa `--once` al mandar el ángulo.
+
 ## Calibración
 1. Coloca el robot en **HOME** (todas las juntas a 0°, brazo vertical).
 2. Lee el ADC y copia los valores en `RAW_ZERO[5]`.

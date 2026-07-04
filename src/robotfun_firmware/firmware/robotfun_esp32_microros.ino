@@ -38,6 +38,23 @@
  *
  *  HOME: todas las juntas a 0 rad => servos a 90 grados (brazo vertical).
  *
+ *  ANTI-BUCLE (ida y vuelta a HOME):
+ *    Si ves que el brazo va al angulo y REGRESA solo a HOME una y otra vez, el
+ *    ESP32 se esta RESETEANDO (tipicamente por BROWNOUT: caida de tension al mover
+ *    los servos). En cada reset, setup() recolocaba los servos en HOME -> bucle.
+ *    Solucion aqui:
+ *      - Se guarda el ultimo objetivo en memoria RTC (RTC_DATA_ATTR), que SOBREVIVE
+ *        a un reset por brownout. Al arrancar se RESTAURA (no se fuerza HOME) => el
+ *        brazo se queda donde estaba y NO rebota.
+ *      - Diagnostico por ROS: /joint_states.effort[0] = nº de arranques (boot_count)
+ *        y effort[1] = motivo del ultimo reset (esp_reset_reason):
+ *          1=power-on, 3=SW, 4=panic, 6=task-WDT, 8=deep-sleep, 9=BROWNOUT.
+ *        Si effort[0] SUBE solo y effort[1]==9 -> es brownout: alimenta los servos
+ *        con una fuente EXTERNA 5-6V (NO desde el ESP32/USB), GND comun y un
+ *        condensador de 1000uF+ cerca de los servos.
+ *    (El firmware ya no puede generar ese bucle por si mismo: es lazo abierto y se
+ *     queda en el objetivo; el bucle SIEMPRE es reset externo o doble publicador.)
+ *
  *  PINES (5 canales: 4 brazo + gripper) — REASIGNADOS tras quitar el roll:
  *      idx :   0     1     2       3          4
  *      junta:  j1    j2    j3    j4(pitch)  j5(gripper)
@@ -58,6 +75,8 @@
  * ==========================================================================*/
 
 #include <math.h>
+
+#include "esp_system.h"        // esp_reset_reason() para diagnosticar RESETS
 
 #include <micro_ros_arduino.h>
 #include <ESP32Servo.h>
@@ -169,6 +188,16 @@ float cur_pos[NUM_CH];
 float cur_vel[NUM_CH];
 unsigned long last_motion_ms = 0;
 
+// --- Persistencia entre RESETS (memoria RTC: sobrevive a un reset por brownout) ---
+// Rompe el bucle "ida y vuelta a HOME": si el ESP32 se resetea, al arrancar NO se
+// fuerza HOME; se RESTAURA el ultimo objetivo. boot_count/reset_reason se publican
+// en /joint_states.effort[0..1] para diagnosticar si hay resets y por que.
+#define RTC_MAGIC 0xB0A0C0DEu
+RTC_DATA_ATTR uint32_t rtc_valid = 0;
+RTC_DATA_ATTR uint32_t boot_count = 0;
+RTC_DATA_ATTR float    rtc_target[NUM_CH];
+int reset_reason = 0;
+
 rcl_node_t node;
 rclc_support_t support;
 rcl_allocator_t allocator;
@@ -249,8 +278,10 @@ void command_callback(const void *msgin) {
     if ((size_t)i < msg->data.size) {
       float lo = JOINT_MIN_DEG[i] * DEG2RAD, hi = JOINT_MAX_DEG[i] * DEG2RAD;
       target_pos[i] = clampf(msg->data.data[i], lo, hi);
+      rtc_target[i] = target_pos[i];    // persiste el objetivo (sobrevive a un reset)
     }   // si no llega el gripper (size==4) conserva su objetivo anterior
   }
+  rtc_valid = RTC_MAGIC;
 }
 
 void read_feedback() {
@@ -303,11 +334,28 @@ void setup() {
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(STATUS_LED_PIN, HIGH);
 
+  boot_count++;
+  reset_reason = (int)esp_reset_reason();   // 1=power-on, 9=BROWNOUT, 6=task-WDT...
+
   for (int i = 0; i < NUM_CH; i++) {
     position_data[i] = velocity_data[i] = effort_data[i] = 0.0;
     command_data[i] = 0.0f; feedback_filtered[i] = 0.0f;
-    target_pos[i] = cur_pos[i] = cur_vel[i] = 0.0f;   // arranca en HOME, quieto
+    cur_vel[i] = 0.0f;
   }
+  // Anti-bucle: si venimos de un RESET (no del primer arranque), RESTAURA el ultimo
+  // objetivo en vez de forzar HOME => el brazo se queda donde estaba y NO rebota.
+  if (rtc_valid == RTC_MAGIC) {
+    for (int i = 0; i < NUM_CH; i++) {
+      float lo = JOINT_MIN_DEG[i] * DEG2RAD, hi = JOINT_MAX_DEG[i] * DEG2RAD;
+      target_pos[i] = cur_pos[i] = clampf(rtc_target[i], lo, hi);
+    }
+  } else {                                  // primer arranque real: HOME
+    for (int i = 0; i < NUM_CH; i++) { target_pos[i] = cur_pos[i] = 0.0f; rtc_target[i] = 0.0f; }
+    rtc_valid = RTC_MAGIC;
+  }
+  // Diagnostico visible por ROS (ros2 topic echo /joint_states):
+  effort_data[0] = (double)boot_count;      // sube solo => el ESP32 se esta reseteando
+  effort_data[1] = (double)reset_reason;    // ==9 => BROWNOUT (fuente de servos debil)
 
   Serial.begin(115200);
   set_microros_transports();
@@ -326,8 +374,9 @@ void setup() {
     servos[i].attach(SERVO_PINS[i], 500, 2400);
   }
 
-  float q_home[NUM_CH] = {0, 0, 0, 0, 0};
-  apply_servo_commands(q_home);
+  // Coloca los servos en la postura RESTAURADA (o HOME en el primer arranque),
+  // sin saltos: evita re-homear tras un reset y reduce el pico de corriente.
+  apply_servo_commands(cur_pos);
   delay(1000);
 
   allocator = rcl_get_default_allocator();
