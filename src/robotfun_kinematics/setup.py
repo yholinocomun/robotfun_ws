@@ -28,6 +28,7 @@ setup(
             "fk_check_node = robotfun_kinematics.nodes.fk_check_node:main",
             "trajectory_node = robotfun_kinematics.nodes.trajectory_node:main",
             "joint_state_relay = robotfun_kinematics.nodes.joint_state_relay:main",
+            "pick_place = robotfun_kinematics.nodes.pick_place_node:main",
         ],
     },
 )
