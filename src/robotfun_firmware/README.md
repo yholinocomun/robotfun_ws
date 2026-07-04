@@ -61,14 +61,18 @@ Diseño original de 6 canales (referencia del cambio): `SERVO={2,4,5,18,19,21}`,
 > servo `{2,4,5,18,19}` siguen el mismo criterio; si tu cableado físico de servos
 > no cambió (siguen en `{2,4,5,19,21}`), ajústalo en `SERVO_PINS[]` del `.ino`.
 
-## Movimiento demasiado rápido / brusco → ahora es SUAVE
-El firmware NO escribe el ángulo de golpe: guarda el objetivo y un **perfil
-trapezoidal por junta** lo alcanza suave (arranca lento → crucero → frena lento).
-Ajusta la suavidad/velocidad en el `.ino` (más bajo = más lento y suave):
+## Movimiento FLUIDO (tarea de tiempo real dedicada)
+El suavizado corre en una **tarea FreeRTOS en el núcleo 0**, con temporización
+**exacta** (50 Hz, `vTaskDelayUntil`), **aislada del jitter de micro-ROS** (que
+corre en el núcleo 1). Por eso el movimiento sale **fluido** y no "a pasitos".
+Perfil **trapezoidal** (arranque/frenado gradual) con resolución fina en µs.
+Ajusta velocidad/suavidad por junta en el `.ino` (**en grados**):
 ```cpp
-const float MAX_VEL[NUM_CH] = { 0.9f, 0.9f, 0.9f, 0.9f, 1.8f };   // rad/s crucero
-const float MAX_ACC[NUM_CH] = { 2.5f, 2.5f, 2.5f, 2.5f, 5.0f };   // rad/s² acel
+const float MAX_VEL[NUM_CH] = {  70,  70,  70,  70, 120 };   // grados/s (crucero)
+const float MAX_ACC[NUM_CH] = { 150, 150, 150, 150, 300 };   // grados/s² (suavidad)
 ```
+- Más **fluido/lento** → baja ambos (p. ej. `MAX_VEL=45`, `MAX_ACC=90`).
+- Más **rápido** → sube `MAX_VEL`. `MAX_ACC` bajo = arranque/frenado más suave.
 
 ## Nota anti-bucle (si alguna versión "rebota" a HOME)
 El firmware es **lazo abierto**: llega al objetivo y se queda; no puede rebotar
