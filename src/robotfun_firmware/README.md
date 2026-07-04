@@ -21,27 +21,29 @@ servos y publica la realimentación de 5 potenciómetros.
 > radianes (REP-103). La conversión rad→grados ocurre **únicamente** en
 > `servo.write()`. La **calibración** se expresa en grados/ADC (lo intuitivo del HW).
 
-## Movimiento suave (perfil trapezoidal por junta)
-El firmware **no** salta al objetivo cuando llega `/joint_command`: lo guarda como
-objetivo y un **perfil trapezoidal por junta** (velocidad + aceleración limitadas)
-lo alcanza en pasos de 20 ms (50 Hz, igual que el PWM del servo). Se **re-planifica
-en cada tick**, así que admite objetivos nuevos a mitad de trayecto sin discontinuidades.
-Ley por junta y tick:
-```
-v_stop = sqrt(2·a_max·|objetivo−pos|)      # vel con la que aún se frena a 0 en el objetivo
-v_des  = signo(err)·min(v_max, v_stop)     # crucero o rampa de frenado
-v     += clamp(v_des − v, ±a_max·dt)       # rampa de aceleración => arranque/frenado suave
-pos   += v·dt                              # se escribe pos al servo
-```
-Ajusta por canal en el `.ino` (`rad/s`, `rad/s²`); menor `MAX_ACC` = más suave:
+## Movimiento FLUIDO (tarea de tiempo real dedicada)
+El firmware **no** salta al objetivo cuando llega `/joint_command`: lo guarda y un
+**perfil trapezoidal por junta** (arranca/frena gradual) lo alcanza suave. Ese
+perfil corre en una **tarea FreeRTOS con temporización exacta** (50 Hz,
+`vTaskDelayUntil`) y **prioridad mayor que `loop()`**, así **preempta** al bucle
+cada 20 ms y queda **inmune al jitter de micro-ROS** → movimiento **fluido** (no
+"a pasitos"). Resolución fina en µs y **detección de cruce** del objetivo (0
+overshoot, sin jitter). Ajusta velocidad/suavidad por junta (**en grados**):
 ```cpp
-const float MAX_VEL[NUM_CH] = { 1.5f, 1.5f, 1.5f, 1.5f, 3.0f };   // crucero
-const float MAX_ACC[NUM_CH] = { 5.0f, 5.0f, 5.0f, 5.0f, 10.0f };  // aceleración
+const float MAX_VEL[NUM_CH] = {  70,  70,  70,  70, 120 };   // grados/s (crucero)
+const float MAX_ACC[NUM_CH] = { 150, 150, 150, 150, 300 };   // grados/s² (suavidad)
 ```
-> Mantén estos límites **por encima** de los del `trajectory_node` (v_max=0.6,
-> a_max=1.2) para que el firmware solo suavice saltos crudos y no frene la
-> trayectoria ya planificada; y **por debajo** del máximo físico del servo.
-> Verificado por simulación: vel/acel respetan el límite y no hay overshoot.
+- Más **fluido/lento** → baja ambos (p. ej. `MAX_VEL=45`, `MAX_ACC=90`).
+- Más **rápido** → sube `MAX_VEL`; un `MAX_ACC` bajo = arranque/frenado más sedoso.
+
+### ¿Se resetea el ESP32?
+La tarea de servo necesita **pila suficiente**: se crea con **8192 bytes**. Con
+4096 se desbordaba (float `sqrtf` + librería de servos) → *"Stack canary watchpoint
+triggered (servo_task)"* → **reset**. Va en el **núcleo 1** (deja el 0 libre para el
+sistema) y cede CPU con `vTaskDelayUntil` (no dispara el watchdog). Para ver el
+motivo de un reset: abre el **Monitor Serie a 115200 SIN el agente** y lee el
+mensaje al arrancar (`Stack canary…` = pila; `Brownout detector…` = fuente de
+servos débil → usa **fuente externa 5–6 V**, **GND común**, **cap 1000 µF+**).
 
 ## Pines (5 canales) — reasignados tras quitar el roll
 | Canal | Junta | Servo (PWM) | Pot (ADC) |
@@ -61,29 +63,15 @@ Diseño original de 6 canales (referencia del cambio): `SERVO={2,4,5,18,19,21}`,
 > servo `{2,4,5,18,19}` siguen el mismo criterio; si tu cableado físico de servos
 > no cambió (siguen en `{2,4,5,19,21}`), ajústalo en `SERVO_PINS[]` del `.ino`.
 
-## Movimiento FLUIDO (tarea de tiempo real dedicada)
-El suavizado corre en una **tarea FreeRTOS en el núcleo 0**, con temporización
-**exacta** (50 Hz, `vTaskDelayUntil`), **aislada del jitter de micro-ROS** (que
-corre en el núcleo 1). Por eso el movimiento sale **fluido** y no "a pasitos".
-Perfil **trapezoidal** (arranque/frenado gradual) con resolución fina en µs.
-Ajusta velocidad/suavidad por junta en el `.ino` (**en grados**):
-```cpp
-const float MAX_VEL[NUM_CH] = {  70,  70,  70,  70, 120 };   // grados/s (crucero)
-const float MAX_ACC[NUM_CH] = { 150, 150, 150, 150, 300 };   // grados/s² (suavidad)
-```
-- Más **fluido/lento** → baja ambos (p. ej. `MAX_VEL=45`, `MAX_ACC=90`).
-- Más **rápido** → sube `MAX_VEL`. `MAX_ACC` bajo = arranque/frenado más suave.
-
 ## Nota anti-bucle (si alguna versión "rebota" a HOME)
 El firmware es **lazo abierto**: llega al objetivo y se queda; no puede rebotar
-solo. Si alguna vez lo ves ir al ángulo y **volver a HOME en bucle**, es que el
-**ESP32 se está reiniciando** (en cada reset, `setup()` recoloca los servos). Dos
-causas y su fix:
-- **Watchdog por no ceder CPU**: el `loop()` DEBE terminar con `delay(1)` (ya está).
-  No lo quites.
-- **Brownout** (caída de tensión al mover los servos): alimenta los servos con una
-  **fuente externa 5–6 V** (no desde el ESP32/USB), **GND común**, y un
-  **condensador 1000 µF+** cerca de los servos.
+solo. Si lo ves ir al ángulo y **volver a HOME en bucle**, el **ESP32 se está
+reiniciando** (en cada reset, `setup()` recoloca los servos). Causas y fix:
+- **Pila de la tarea de servo insuficiente** → *Stack canary* → reset. Ya se crea
+  con **8192 bytes** (ver arriba). No la bajes.
+- **Watchdog por no ceder CPU**: `loop()` DEBE terminar con `delay(1)` (ya está).
+- **Brownout** (caída de tensión al mover los servos): **fuente externa 5–6 V**
+  (no desde el ESP32/USB), **GND común**, **condensador 1000 µF+** cerca de los servos.
 Y al mandar un ángulo, usa `--once` y comprueba `ros2 topic info /joint_command
 --verbose` → **1 solo publicador**.
 

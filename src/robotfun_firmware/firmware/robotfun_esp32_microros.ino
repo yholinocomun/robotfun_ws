@@ -9,17 +9,21 @@
  *    desiguales => se veia entrecortado.
  *
  *  SOLUCION (reestructuracion):
- *    El movimiento se ejecuta en una TAREA DE TIEMPO REAL dedicada (FreeRTOS) en
- *    el nucleo 0, con temporizacion EXACTA (vTaskDelayUntil @50 Hz). Inmune al
- *    jitter de micro-ROS => movimiento FLUIDO. Ademas:
- *      - Perfil TRAPEZOIDAL (arranca y frena gradual, sin tirones).
- *      - Resolucion FINA en microsegundos (float), no en pasos de 1 grado.
- *    El nucleo 1 (loop) solo hace micro-ROS: recibe /joint_command y publica el
- *    feedback de pots en /joint_states. Ambos nucleos comparten solo el objetivo.
+ *    El movimiento se ejecuta en una TAREA DE TIEMPO REAL dedicada (FreeRTOS) con
+ *    temporizacion EXACTA (vTaskDelayUntil @50 Hz) y PRIORIDAD mayor que loop(),
+ *    asi PREEMPTE a loop() cada 20 ms => inmune al jitter de micro-ROS => FLUIDO.
+ *    Ademas: perfil TRAPEZOIDAL (arranca/frena gradual) y resolucion FINA en
+ *    microsegundos (float). loop() solo hace micro-ROS (recibe /joint_command y
+ *    publica el feedback de pots). Comparten solo el objetivo (volatile float).
  *
- *  Anti-bucle: es lazo abierto (llega y se queda), loop() cede CPU (delay(1)) y no
- *  hay memoria RTC. Si aun rebotara a HOME, es RESET por hardware (brownout de la
- *  fuente de servos): usa fuente externa 5-6V, GND comun y condensador 1000uF.
+ *  POR QUE SE RESETEABA (y como se arregla): la tarea llevaba pila de 4096 bytes,
+ *  insuficiente para el perfil float + la libreria de servos => desbordaba la pila
+ *  (stack overflow) => reset. Arreglo: pila 8192, tarea en el NUCLEO 1 (mismo que
+ *  attach(), y deja el nucleo 0 libre para el sistema/watchdog), y vTaskDelayUntil
+ *  para ceder CPU. Es lazo abierto y no hay RTC, asi que no se re-homea solo.
+ *  Si AUN se reseteara: abre el Monitor Serie (115200) SIN el agente y lee el
+ *  motivo que imprime el ESP32 al arrancar: "Stack canary..."=pila, "Brownout
+ *  detector..."=fuente de servos debil (usa 5-6V externa, GND comun, cap 1000uF).
  *
  *  Juntas: 5 actuadores joint_1..joint_5 (sin el antiguo roll). joint_4 = pitch de
  *  muñeca (antiguo joint_5); joint_5 = GRIPPER.
@@ -266,8 +270,15 @@ void setup() {
   }
   delay(800);
 
-  // Lanza la TAREA DE SERVO en el nucleo 0 (aislada del micro-ROS del nucleo 1).
-  xTaskCreatePinnedToCore(servo_task, "servo_task", 4096, NULL, 2, NULL, 0);
+  // Lanza la TAREA DE SERVO. IMPORTANTE para que NO se resetee el ESP32:
+  //  - Pila 8192 (el perfil usa float sqrtf/fminf + libreria de servos; 4096 la
+  //    desbordaba -> "Stack canary watchpoint triggered (servo_task)" -> reset).
+  //  - Nucleo 1 (mismo que attach(): evita choques de LEDC entre nucleos y deja
+  //    el nucleo 0 libre para el sistema/watchdog IDLE0).
+  //  - Prioridad 3 (> loop): preempte a loop() cada 20 ms => temporizacion exacta
+  //    (fluida). Como usa vTaskDelayUntil, cede CPU: no starva al IDLE ni al WDT.
+  BaseType_t ok = xTaskCreatePinnedToCore(servo_task, "servo_task", 8192, NULL, 3, NULL, 1);
+  if (ok != pdPASS) error_loop();     // sin memoria para la tarea: avisa (no sigue a ciegas)
 
   // micro-ROS (nucleo 1, en loop)
   Serial.begin(115200);
