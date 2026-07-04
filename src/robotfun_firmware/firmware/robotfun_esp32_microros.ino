@@ -3,16 +3,15 @@
  *  ---------------------------------------------------------------------------
  *  BAJO NIVEL (micro-ROS) del brazo de 4 GDL (yaw + 3 pitch) + GRIPPER.
  *
- *  REESTRUCTURACION: el proyecto se reorganiza como si el robot SIEMPRE hubiese
- *  tenido CINCO actuadores (sin el antiguo roll de muñeca). Las juntas quedan:
- *      joint_1  yaw de la base
- *      joint_2  pitch del hombro
- *      joint_3  pitch del codo
- *      joint_4  pitch de la muñeca      (físicamente el ANTIGUO joint_5)
- *      joint_5  GRIPPER                 (físicamente el ANTIGUO gripper)
- *  El antiguo joint_4 de ROLL desaparece por completo: no hay servo muerto ni
- *  canal reservado; su pin se re-asigna (ver más abajo). El bus ROS transporta
- *  los 5 canales [q1,q2,q3,q4, gripper] sin ningún hueco.
+ *  Base = tu firmware micro-ROS que FUNCIONA (va al angulo y NO vuelve a HOME).
+ *  Unico anadido: MOVIMIENTO SUAVE. El comando ya NO salta de golpe al servo; se
+ *  guarda como OBJETIVO y un perfil TRAPEZOIDAL por junta (arranca lento -> crucero
+ *  -> frena lento) lo alcanza en pasos de 20 ms. Sin memoria RTC ni nada extra:
+ *  se conserva TODO lo de la version que te funcionaba (setup, executor, feedback,
+ *  y sobre todo el delay(1) del loop, que evita reset por watchdog).
+ *
+ *  Reestructuracion previa (se mantiene): 5 actuadores joint_1..joint_5, sin el
+ *  antiguo roll. joint_4 = pitch de muñeca (antiguo joint_5); joint_5 = GRIPPER.
  *
  *  Pipeline:
  *    /joint_command (std_msgs/Float32MultiArray, RADIANES [q1,q2,q3,q4, gripper])
@@ -21,62 +20,22 @@
  *    5 potenciometros --> /joint_states (sensor_msgs/JointState, RADIANES) @25 Hz
  *    joint_states.name = { joint_1, joint_2, joint_3, joint_4, joint_5 }
  *
- *  MOVIMIENTO SUAVE (todos los servos):
- *    El comando NO se escribe de golpe al servo. Se guarda como OBJETIVO y un
- *    perfil TRAPEZOIDAL por junta (velocidad + aceleracion limitadas) lo alcanza
- *    en pasos de 20 ms. Se RE-PLANIFICA en cada tick, asi que admite objetivos
- *    nuevos a mitad de trayecto sin saltos. Limites por junta en MAX_VEL/MAX_ACC.
- *    Ley por junta y tick:
- *        v_stop = sqrt(2*a_max*|objetivo-pos|)   (vel con la que aun se frena a 0)
- *        v_des  = sign(err) * min(v_max, v_stop) (cruise o rampa de frenado)
- *        v     += clamp(v_des - v, ±a_max*dt)    (rampa de aceleracion => suave)
- *        pos   += v*dt                           (se escribe pos al servo)
- *
  *  UNIDADES: el bus ROS va en RADIANES (REP-103, JointState). La conversion a
  *  GRADOS de servo ocurre solo en servo.write(). La calibracion se expresa en
  *  grados/ADC (intuitivo del hardware).
  *
  *  HOME: todas las juntas a 0 rad => servos a 90 grados (brazo vertical).
  *
- *  ANTI-BUCLE (ida y vuelta a HOME):
- *    Si ves que el brazo va al angulo y REGRESA solo a HOME una y otra vez, el
- *    ESP32 se esta RESETEANDO (tipicamente por BROWNOUT: caida de tension al mover
- *    los servos). En cada reset, setup() recolocaba los servos en HOME -> bucle.
- *    Solucion aqui:
- *      - Se guarda el ultimo objetivo en memoria RTC (RTC_DATA_ATTR), que SOBREVIVE
- *        a un reset por brownout. Al arrancar se RESTAURA (no se fuerza HOME) => el
- *        brazo se queda donde estaba y NO rebota.
- *      - Diagnostico por ROS: /joint_states.effort[0] = nº de arranques (boot_count)
- *        y effort[1] = motivo del ultimo reset (esp_reset_reason):
- *          1=power-on, 3=SW, 4=panic, 6=task-WDT, 8=deep-sleep, 9=BROWNOUT.
- *        Si effort[0] SUBE solo y effort[1]==9 -> es brownout: alimenta los servos
- *        con una fuente EXTERNA 5-6V (NO desde el ESP32/USB), GND comun y un
- *        condensador de 1000uF+ cerca de los servos.
- *    (El firmware ya no puede generar ese bucle por si mismo: es lazo abierto y se
- *     queda en el objetivo; el bucle SIEMPRE es reset externo o doble publicador.)
- *
  *  PINES (5 canales: 4 brazo + gripper) — REASIGNADOS tras quitar el roll:
  *      idx :   0     1     2       3          4
  *      junta:  j1    j2    j3    j4(pitch)  j5(gripper)
  *      SERVO:  2     4     5     18         19
  *      POT  :  32    33    34    35         27       (34 solo IN; 27 ADC2 OK con serial)
- *
- *  Diseño original de 6 canales (para referencia del cambio de pines):
- *      SERVO = {2, 4, 5, 18, 19, 21}   POT = {32, 33, 34, 35, 27, 26}
- *      (idx 3 era el ROLL; idx 4 el pitch; idx 5 el gripper)
- *  Al eliminar el roll se "revive" su pin y todo se desplaza una posición atrás:
- *      POT  : se REVIVE 35 (ahora j4), CONTINÚA con 27 (ahora gripper), se ANULA 26.
- *      SERVO: en paralelo se revive 18 (ahora j4), continúa 19 (gripper), se anula 21.
- *  NOTA: el usuario fijó explícitamente los PINES DE POT {32,33,34,35,27}. Los de
- *  SERVO siguen el mismo criterio {2,4,5,18,19}. Si tu cableado FÍSICO de servos
- *  no cambió (siguen en {2,4,5,19,21}), ajústalo aquí en SERVO_PINS[].
- *
+ *  NOTA: si tu cableado de servos no cambio (siguen en {2,4,5,19,21}), ajusta SERVO_PINS[].
  *      LED de estado: GPIO 13 (GPIO 2 es el servo j1).
  * ==========================================================================*/
 
 #include <math.h>
-
-#include "esp_system.h"        // esp_reset_reason() para diagnosticar RESETS
 
 #include <micro_ros_arduino.h>
 #include <ESP32Servo.h>
@@ -101,11 +60,7 @@ const int POT_PINS[NUM_CH]   = { 32, 33, 34, 35, 27 };
 const char *JOINT_LABEL[NUM_CH] = { "joint_1", "joint_2", "joint_3", "joint_4", "joint_5" };
 
 // ===========================================================================
-//  CALIBRACION (grados / cuentas ADC). Ajustar en pruebas.
-// ---------------------------------------------------------------------------
-//  Se CONSERVA la calibración ya realizada. El índice físico de cada junta NO
-//  cambió (j1,j2,j3, el pitch de muñeca y el gripper siguen en el mismo orden);
-//  solo se re-etiquetó el gripper como joint_5 y se re-asignaron sus pines.
+//  CALIBRACION (grados / cuentas ADC). Se CONSERVA tal cual la version que funciona.
 // ===========================================================================
 // RAW_ZERO[i]: ADC (0..4095) de cada pot en HOME (todas las juntas a 0 rad).
 int RAW_ZERO[NUM_CH] = {
@@ -119,37 +74,15 @@ int RAW_ZERO[NUM_CH] = {
 // FEEDBACK_DIRECTION[i]: sentido del pot hacia RViz (-1 si sale invertido).
 const float FEEDBACK_DIRECTION[NUM_CH] = { 1, 1, -1, -1, 1 };
 
-// SERVO_DIRECTION[i]: sentido del servo respecto al comando (+q en el sentido
-//   positivo de la convencion DH). Cambia 1 por -1 si gira al reves. CALIBRAR.
+// SERVO_DIRECTION[i]: sentido del servo respecto al comando. CALIBRAR.
 const float SERVO_DIRECTION[NUM_CH] = { 1, -1, 1, -1, 1 };
 
 // ===========================================================================
 //  RANGO Y CENTRO POR CANAL  ->  define el ESPACIO DE TRABAJO
-// ---------------------------------------------------------------------------
-// El servo da 180° FÍSICOS. servo_deg = SERVO_CENTER_DEG[i] + DIR*q_deg, saturado
-// a [0,180]. Por tanto el rango útil de q por junta = 180° REPARTIDOS según dónde
-// pongas el CENTRO:
-//   * SERVO_CENTER_DEG = 90  -> q ∈ [-90, +90]  (SIMÉTRICO, lo actual).
-//   * SERVO_CENTER_DEG = 60  -> q ∈ [-60, +120] (más rango HACIA ADELANTE).
-//   * SERVO_CENTER_DEG = 120 -> q ∈ [-120, +60] (más rango hacia atrás).
-// Para un brazo que trabaja sobre una mesa AL FRENTE conviene sesgar los PITCH
-// (joint_2/3) hacia adelante -> +50..70% de puntos alcanzables.
-//
-// IMPORTANTE: si cambias el centro, DEBES:
-//   (1) re-montar el horn del servo para que en HOME (brazo vertical) el servo
-//       quede en ese nuevo centro (p. ej. 60°), y volver a leer RAW_ZERO[i];
-//   (2) poner el MISMO rango asimétrico en robotfun_kinematics (dh_model.py,
-//       Q_MIN/Q_MAX) para que la IK no pida ángulos que el servo no da.
-// Deja el simétrico (90 / ±90) hasta validar mecánicamente que no hay colisión.
-// El gripper (joint_5) usa su propio rango de apertura [0, 70]°.
-// ===========================================================================
 // idx:                                   j1    j2    j3    j4   j5(grip)
 const float SERVO_CENTER_DEG[NUM_CH] = {  90,   90,   90,   90,   90 };
 const float JOINT_MIN_DEG[NUM_CH]    = { -90,  -90,  -90,  -90,    0 };
 const float JOINT_MAX_DEG[NUM_CH]    = {  90,   90,   90,   90,   70 };
-//  Ejemplo "más workspace al frente" (tras re-montar horns y ajustar Q_MIN/MAX):
-//  SERVO_CENTER_DEG = {90, 60, 60, 90, 90};
-//  JOINT_MIN_DEG    = {-90,-60,-60,-90, 0};  JOINT_MAX_DEG = {90,120,120,90,70};
 
 const float ADC_TO_DEG = 180.0f / 4095.0f;     // pot de 180° sobre 0..4095
 const float DEG2RAD = 0.017453292519943295f;
@@ -159,44 +92,30 @@ const float ALPHA = 0.15f;                      // filtro exponencial del ADC
 // ===========================================================================
 //  MOVIMIENTO SUAVE  ->  perfil trapezoidal por junta (vel + acel limitadas)
 // ---------------------------------------------------------------------------
-// El perfil corre a SERVO_UPDATE_HZ (mismo periodo que el PWM del servo: 50 Hz,
-// no tiene sentido escribir mas rapido que la trama de 20 ms). Limites POR JUNTA:
-//   MAX_VEL[i] rad/s   -> velocidad de crucero (que tan rapido va como maximo)
-//   MAX_ACC[i] rad/s^2 -> aceleracion (que tan suave arranca/frena; menor = mas suave)
-// Sugerencia: mantenlos POR ENCIMA de los limites del trajectory_node (v_max=0.6,
-// a_max=1.2) para que el firmware solo suavice saltos crudos y no frene la
-// trayectoria ya planificada; y POR DEBAJO del maximo fisico del servo. El gripper
-// (joint_5) suele querer respuesta mas rapida.
-#define SERVO_UPDATE_HZ 50
-const unsigned long SERVO_UPDATE_MS = 1000UL / SERVO_UPDATE_HZ;    // 20 ms
+// Corre a 50 Hz (paso de 20 ms, igual que el PWM del servo). Limites POR JUNTA:
+//   MAX_VEL[i] rad/s   -> velocidad de crucero (mas bajo = MAS LENTO / suave)
+//   MAX_ACC[i] rad/s^2 -> aceleracion (mas bajo = arranque/frenado MAS suave)
+// Valores por defecto LENTOS y suaves. Referencia: 1.0 rad/s ~= 57 grados/s.
+// >>> Si lo quieres AUN mas lento, baja MAX_VEL (p. ej. 0.6). Si demasiado lento,
+//     subelo (p. ej. 1.5). El gripper (joint_5) va un poco mas agil.
+#define SERVO_UPDATE_MS 20
 // idx:                          j1     j2     j3     j4    j5(grip)
-const float MAX_VEL[NUM_CH] = { 1.5f,  1.5f,  1.5f,  1.5f,  3.0f };   // rad/s
-const float MAX_ACC[NUM_CH] = { 5.0f,  5.0f,  5.0f,  5.0f, 10.0f };   // rad/s^2
-// Umbrales de "llegada" para eliminar micro-oscilacion al fijar el objetivo:
-const float POS_EPS = 0.0035f;   // ~0.2 grados
+const float MAX_VEL[NUM_CH] = { 0.9f,  0.9f,  0.9f,  0.9f,  1.8f };   // rad/s
+const float MAX_ACC[NUM_CH] = { 2.5f,  2.5f,  2.5f,  2.5f,  5.0f };   // rad/s^2
+const float POS_EPS = 0.0035f;   // ~0.2 grados (umbral de "llegada")
 const float VEL_EPS = 0.02f;     // rad/s
 
-// ===========================================================================
-Servo servos[NUM_CH];
-float feedback_filtered[NUM_CH];
-bool  filter_initialized = false;
-
-// Estado del perfil de movimiento (rad, rad/s). target_pos lo fija /joint_command;
-// cur_pos es lo que se escribe al servo cada tick; cur_vel es la vel del perfil.
+// Estado del perfil (rad, rad/s). target_pos lo fija /joint_command; cur_pos es lo
+// que se escribe al servo; cur_vel es la velocidad del perfil.
 float target_pos[NUM_CH];
 float cur_pos[NUM_CH];
 float cur_vel[NUM_CH];
 unsigned long last_motion_ms = 0;
 
-// --- Persistencia entre RESETS (memoria RTC: sobrevive a un reset por brownout) ---
-// Rompe el bucle "ida y vuelta a HOME": si el ESP32 se resetea, al arrancar NO se
-// fuerza HOME; se RESTAURA el ultimo objetivo. boot_count/reset_reason se publican
-// en /joint_states.effort[0..1] para diagnosticar si hay resets y por que.
-#define RTC_MAGIC 0xB0A0C0DEu
-RTC_DATA_ATTR uint32_t rtc_valid = 0;
-RTC_DATA_ATTR uint32_t boot_count = 0;
-RTC_DATA_ATTR float    rtc_target[NUM_CH];
-int reset_reason = 0;
+// ===========================================================================
+Servo servos[NUM_CH];
+float feedback_filtered[NUM_CH];
+bool  filter_initialized = false;
 
 rcl_node_t node;
 rclc_support_t support;
@@ -243,15 +162,23 @@ void apply_servo_commands(const float *q_cmd) {
   for (int i = 0; i < NUM_CH; i++) servos[i].write(rad_to_servo_deg(q_cmd[i], i));
 }
 
-// Un paso del perfil trapezoidal por junta. Re-planifica cada tick (admite
-// objetivos nuevos a mitad de camino) y escribe la posicion suavizada al servo.
+// Un paso del perfil trapezoidal por junta. Solo escribe el servo mientras se
+// mueve (como tu sketch de referencia); al llegar hace un ultimo write y para.
 void update_motion(float dt) {
   for (int i = 0; i < NUM_CH; i++) {
     float err = target_pos[i] - cur_pos[i];
+    // Ya llego: fija exacto, para y NO re-escribe (evita zumbido y ahorra CPU).
+    if (fabsf(err) < POS_EPS && fabsf(cur_vel[i]) < VEL_EPS) {
+      if (cur_pos[i] != target_pos[i]) {
+        cur_pos[i] = target_pos[i];
+        servos[i].write(rad_to_servo_deg(cur_pos[i], i));
+      }
+      cur_vel[i] = 0.0f;
+      continue;
+    }
     // Velocidad maxima con la que AUN puedo frenar hasta 0 justo en el objetivo:
     float v_stop = sqrtf(2.0f * MAX_ACC[i] * fabsf(err));
-    // Deseada: crucero salvo cuando toca frenar; con el signo del error.
-    float v_des = (err >= 0.0f ? 1.0f : -1.0f) * fminf(MAX_VEL[i], v_stop);
+    float v_des  = (err >= 0.0f ? 1.0f : -1.0f) * fminf(MAX_VEL[i], v_stop);
     // Rampa de aceleracion: limita el cambio de velocidad por tick (=> suave).
     float dv = v_des - cur_vel[i];
     float dv_max = MAX_ACC[i] * dt;
@@ -259,11 +186,6 @@ void update_motion(float dt) {
     if (dv < -dv_max) dv = -dv_max;
     cur_vel[i] += dv;
     cur_pos[i] += cur_vel[i] * dt;
-    // "Snap" al llegar: evita micro-oscilacion alrededor del objetivo.
-    if (fabsf(target_pos[i] - cur_pos[i]) < POS_EPS && fabsf(cur_vel[i]) < VEL_EPS) {
-      cur_pos[i] = target_pos[i];
-      cur_vel[i] = 0.0f;
-    }
     servos[i].write(rad_to_servo_deg(cur_pos[i], i));
   }
 }
@@ -278,10 +200,8 @@ void command_callback(const void *msgin) {
     if ((size_t)i < msg->data.size) {
       float lo = JOINT_MIN_DEG[i] * DEG2RAD, hi = JOINT_MAX_DEG[i] * DEG2RAD;
       target_pos[i] = clampf(msg->data.data[i], lo, hi);
-      rtc_target[i] = target_pos[i];    // persiste el objetivo (sobrevive a un reset)
     }   // si no llega el gripper (size==4) conserva su objetivo anterior
   }
-  rtc_valid = RTC_MAGIC;
 }
 
 void read_feedback() {
@@ -334,28 +254,11 @@ void setup() {
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(STATUS_LED_PIN, HIGH);
 
-  boot_count++;
-  reset_reason = (int)esp_reset_reason();   // 1=power-on, 9=BROWNOUT, 6=task-WDT...
-
   for (int i = 0; i < NUM_CH; i++) {
     position_data[i] = velocity_data[i] = effort_data[i] = 0.0;
     command_data[i] = 0.0f; feedback_filtered[i] = 0.0f;
-    cur_vel[i] = 0.0f;
+    target_pos[i] = cur_pos[i] = cur_vel[i] = 0.0f;   // arranca en HOME, quieto
   }
-  // Anti-bucle: si venimos de un RESET (no del primer arranque), RESTAURA el ultimo
-  // objetivo en vez de forzar HOME => el brazo se queda donde estaba y NO rebota.
-  if (rtc_valid == RTC_MAGIC) {
-    for (int i = 0; i < NUM_CH; i++) {
-      float lo = JOINT_MIN_DEG[i] * DEG2RAD, hi = JOINT_MAX_DEG[i] * DEG2RAD;
-      target_pos[i] = cur_pos[i] = clampf(rtc_target[i], lo, hi);
-    }
-  } else {                                  // primer arranque real: HOME
-    for (int i = 0; i < NUM_CH; i++) { target_pos[i] = cur_pos[i] = 0.0f; rtc_target[i] = 0.0f; }
-    rtc_valid = RTC_MAGIC;
-  }
-  // Diagnostico visible por ROS (ros2 topic echo /joint_states):
-  effort_data[0] = (double)boot_count;      // sube solo => el ESP32 se esta reseteando
-  effort_data[1] = (double)reset_reason;    // ==9 => BROWNOUT (fuente de servos debil)
 
   Serial.begin(115200);
   set_microros_transports();
@@ -374,9 +277,8 @@ void setup() {
     servos[i].attach(SERVO_PINS[i], 500, 2400);
   }
 
-  // Coloca los servos en la postura RESTAURADA (o HOME en el primer arranque),
-  // sin saltos: evita re-homear tras un reset y reduce el pico de corriente.
-  apply_servo_commands(cur_pos);
+  float q_home[NUM_CH] = {0, 0, 0, 0, 0};
+  apply_servo_commands(q_home);
   delay(1000);
 
   allocator = rcl_get_default_allocator();
@@ -404,13 +306,14 @@ void setup() {
 }
 
 void loop() {
-  // Atiende comandos entrantes (spin corto para no desfasar el tick de 20 ms).
+  // Atiende comandos entrantes.
   RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(5)));
-  // Avanza el perfil trapezoidal a paso fijo (dt real => robusto a jitter).
+  // Avanza el perfil suave cada 20 ms (dt real => robusto a jitter).
   unsigned long now = millis();
   if (now - last_motion_ms >= SERVO_UPDATE_MS) {
     float dt = (now - last_motion_ms) * 0.001f;
     last_motion_ms = now;
     update_motion(dt);
   }
+  delay(1);   // CEDE CPU (evita inanicion del IDLE / reset por watchdog). NO quitar.
 }

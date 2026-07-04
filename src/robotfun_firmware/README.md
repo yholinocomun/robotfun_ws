@@ -61,21 +61,27 @@ Diseño original de 6 canales (referencia del cambio): `SERVO={2,4,5,18,19,21}`,
 > servo `{2,4,5,18,19}` siguen el mismo criterio; si tu cableado físico de servos
 > no cambió (siguen en `{2,4,5,19,21}`), ajústalo en `SERVO_PINS[]` del `.ino`.
 
-## ¿El brazo va al ángulo y REGRESA solo a HOME (ida y vuelta)?
-El firmware es **lazo abierto**: llega al objetivo y se queda. No puede rebotar
-solo. Si rebota a HOME en bucle es porque el **ESP32 se está reiniciando** (en cada
-reset, `setup()` recolocaba los servos) — casi siempre por **BROWNOUT** (caída de
-tensión al mover los servos). El firmware ahora lo detecta y lo mitiga:
+## Movimiento demasiado rápido / brusco → ahora es SUAVE
+El firmware NO escribe el ángulo de golpe: guarda el objetivo y un **perfil
+trapezoidal por junta** lo alcanza suave (arranca lento → crucero → frena lento).
+Ajusta la suavidad/velocidad en el `.ino` (más bajo = más lento y suave):
+```cpp
+const float MAX_VEL[NUM_CH] = { 0.9f, 0.9f, 0.9f, 0.9f, 1.8f };   // rad/s crucero
+const float MAX_ACC[NUM_CH] = { 2.5f, 2.5f, 2.5f, 2.5f, 5.0f };   // rad/s² acel
+```
 
-- **Diagnóstico** (sin cables extra): `ros2 topic echo /joint_states` y mira `effort`:
-  - `effort[0]` = nº de arranques. **Si sube solo, el ESP32 se está reseteando.**
-  - `effort[1]` = motivo del último reset: `1`=power-on, `6`=task-WDT, **`9`=BROWNOUT**.
-- **Anti-bucle**: al arrancar restaura el último objetivo (memoria RTC), no fuerza
-  HOME → el brazo se queda donde estaba y deja de rebotar.
-- **Arreglo de raíz (si `effort[1]==9`)**: alimenta los servos con una **fuente
-  externa 5–6 V** (no desde el ESP32/USB), **GND común**, y un **condensador de
-  1000 µF+** cerca de los servos. También revisa que `ros2 topic info /joint_command
-  --verbose` muestre **1 solo publicador** y usa `--once` al mandar el ángulo.
+## Nota anti-bucle (si alguna versión "rebota" a HOME)
+El firmware es **lazo abierto**: llega al objetivo y se queda; no puede rebotar
+solo. Si alguna vez lo ves ir al ángulo y **volver a HOME en bucle**, es que el
+**ESP32 se está reiniciando** (en cada reset, `setup()` recoloca los servos). Dos
+causas y su fix:
+- **Watchdog por no ceder CPU**: el `loop()` DEBE terminar con `delay(1)` (ya está).
+  No lo quites.
+- **Brownout** (caída de tensión al mover los servos): alimenta los servos con una
+  **fuente externa 5–6 V** (no desde el ESP32/USB), **GND común**, y un
+  **condensador 1000 µF+** cerca de los servos.
+Y al mandar un ángulo, usa `--once` y comprueba `ros2 topic info /joint_command
+--verbose` → **1 solo publicador**.
 
 ## Calibración
 1. Coloca el robot en **HOME** (todas las juntas a 0°, brazo vertical).
