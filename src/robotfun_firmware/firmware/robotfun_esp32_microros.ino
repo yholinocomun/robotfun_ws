@@ -14,10 +14,12 @@
  *      - Lazo abierto: llega al objetivo y se queda (no se re-homea solo).
  *
  *  SI AUN SE RESETEA -> es BROWNOUT (la fuente no aguanta la corriente de los
- *  servos). Confirmalo: Monitor Serie 115200 SIN el agente; al arrancar imprime
- *  "Brownout detector was triggered". Arreglo de raiz: fuente EXTERNA 5-6V para
- *  los servos (NO desde el ESP32/USB), GND comun, condensador 1000uF+ cerca de
- *  los servos. Parche de software (ultimo recurso): DISABLE_BROWNOUT abajo.
+ *  servos). CONFIRMALO SIN CABLES: 'ros2 topic echo /joint_states' y mira effort:
+ *    effort[0] = nº de arranques  -> si SUBE solo, el ESP32 se esta reseteando.
+ *    effort[1] = motivo del reset -> 1=power-on, 6=task-WDT, 9=BROWNOUT.
+ *  Si effort[1]==9: arreglo de raiz = fuente EXTERNA 5-6V para los servos (NO desde
+ *  el ESP32/USB), GND comun, condensador 1000uF+ cerca de los servos. Parche de
+ *  software (ultimo recurso mientras consigues la fuente): DISABLE_BROWNOUT=1 abajo.
  *
  *  Juntas: 5 actuadores joint_1..joint_5 (sin el antiguo roll). joint_4 = pitch
  *  de muñeca (antiguo joint_5); joint_5 = GRIPPER.
@@ -32,6 +34,7 @@
 #define DISABLE_BROWNOUT 0
 
 #include <math.h>
+#include "esp_system.h"            // esp_reset_reason() para diagnosticar resets
 #if DISABLE_BROWNOUT
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
@@ -105,6 +108,12 @@ unsigned long last_tick_us = 0;
 // Feedback
 float feedback_filtered[NUM_CH];
 bool  filter_initialized = false;
+
+// Diagnostico de RESET (se publica en /joint_states.effort). boot_count vive en
+// memoria RTC y SOBREVIVE a un reset por brownout, asi que si SUBE solo => el
+// ESP32 se esta reiniciando. reset_reason: 1=power-on, 9=BROWNOUT, 6=task-WDT...
+RTC_DATA_ATTR uint32_t boot_count = 0;
+int reset_reason = 0;
 
 rcl_node_t node;
 rclc_support_t support;
@@ -240,12 +249,18 @@ void setup() {
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(STATUS_LED_PIN, HIGH);
 
+  boot_count++;
+  reset_reason = (int)esp_reset_reason();       // 1=power-on, 9=BROWNOUT, 6=task-WDT
+
   for (int i = 0; i < NUM_CH; i++) {
     position_data[i] = velocity_data[i] = effort_data[i] = 0.0;
     command_data[i] = 0.0f; feedback_filtered[i] = 0.0f;
     target_deg[i] = cur_deg[i] = cur_vel[i] = 0.0f;   // arranca en HOME, quieto
     last_us[i] = -1;
   }
+  // Diagnostico visible por ROS (ros2 topic echo /joint_states):
+  effort_data[0] = (double)boot_count;          // SUBE solo => el ESP32 se resetea
+  effort_data[1] = (double)reset_reason;        // ==9 => BROWNOUT (fuente de servos)
 
   // Servos: attach + HOME, ESCALONADO para no pedir toda la corriente de golpe.
   ESP32PWM::allocateTimer(0); ESP32PWM::allocateTimer(1);
