@@ -13,7 +13,8 @@
       <xacro:insert_block name="origin"/>
       <parent link="${parent}"/><child link="gripper_finger_left"/>
       <axis xyz="0 1 0"/>
-      <limit effort="5.0" lower="0.0" upper="0.6" velocity="2.0"/>
+      <!-- rango 0..70° (1.22 rad), igual que el firmware/command; asi RViz no recorta -->
+      <limit effort="5.0" lower="0.0" upper="1.22" velocity="2.0"/>
     </joint>
     <link name="gripper_finger_left">
       <inertial><mass value="0.01"/>
@@ -28,7 +29,7 @@
       <xacro:insert_block name="origin"/>
       <parent link="${parent}"/><child link="gripper_finger_right"/>
       <axis xyz="0 1 0"/>
-      <limit effort="5.0" lower="-0.6" upper="0.0" velocity="2.0"/>
+      <limit effort="5.0" lower="-1.22" upper="0.0" velocity="2.0"/>
       <mimic joint="joint_5" multiplier="-1.0"/>
     </joint>
     <link name="gripper_finger_right">
