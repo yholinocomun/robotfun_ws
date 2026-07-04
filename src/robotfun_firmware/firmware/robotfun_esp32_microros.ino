@@ -1,43 +1,41 @@
 /* ============================================================================
- *  robotfun_esp32_microros.ino   —   VERSION DEFINITIVA (movimiento FLUIDO)
+ *  robotfun_esp32_microros.ino   —   VERSION ROBUSTA (un solo hilo, sin FreeRTOS)
  *  ---------------------------------------------------------------------------
  *  BAJO NIVEL (micro-ROS) del brazo de 4 GDL (yaw + 3 pitch) + GRIPPER.
  *
- *  POR QUE ANTES SE VEIA "A PASITOS":
- *    El suavizado corria dentro de loop(), junto a micro-ROS. spin_some() bloquea
- *    de forma IRREGULAR al hablar con el agente => los pasos del servo salian
- *    desiguales => se veia entrecortado.
+ *  POR QUE ESTA VERSION NO SE RESETEA:
+ *    La version anterior usaba una TAREA FreeRTOS dedicada; eso introducia el
+ *    reset (desbordamiento de pila / interaccion con el watchdog del sistema).
+ *    Aqui NO hay tarea: TODO corre en loop(), igual que tus versiones que NUNCA
+ *    se reseteaban. La FLUIDEZ no venia de la tarea, sino de mover el servo con
+ *    PASOS FINOS en microsegundos (float), no en saltos de 1 grado -> eso se hace
+ *    igual dentro de loop(). Un temporizador por micros() da el paso de 20 ms.
+ *      - Sin tarea, sin memoria RTC, loop() cede CPU con delay(1) (no watchdog).
+ *      - Lazo abierto: llega al objetivo y se queda (no se re-homea solo).
  *
- *  SOLUCION (reestructuracion):
- *    El movimiento se ejecuta en una TAREA DE TIEMPO REAL dedicada (FreeRTOS) con
- *    temporizacion EXACTA (vTaskDelayUntil @50 Hz) y PRIORIDAD mayor que loop(),
- *    asi PREEMPTE a loop() cada 20 ms => inmune al jitter de micro-ROS => FLUIDO.
- *    Ademas: perfil TRAPEZOIDAL (arranca/frena gradual) y resolucion FINA en
- *    microsegundos (float). loop() solo hace micro-ROS (recibe /joint_command y
- *    publica el feedback de pots). Comparten solo el objetivo (volatile float).
+ *  SI AUN SE RESETEA -> es BROWNOUT (la fuente no aguanta la corriente de los
+ *  servos). Confirmalo: Monitor Serie 115200 SIN el agente; al arrancar imprime
+ *  "Brownout detector was triggered". Arreglo de raiz: fuente EXTERNA 5-6V para
+ *  los servos (NO desde el ESP32/USB), GND comun, condensador 1000uF+ cerca de
+ *  los servos. Parche de software (ultimo recurso): DISABLE_BROWNOUT abajo.
  *
- *  POR QUE SE RESETEABA (y como se arregla): la tarea llevaba pila de 4096 bytes,
- *  insuficiente para el perfil float + la libreria de servos => desbordaba la pila
- *  (stack overflow) => reset. Arreglo: pila 8192, tarea en el NUCLEO 1 (mismo que
- *  attach(), y deja el nucleo 0 libre para el sistema/watchdog), y vTaskDelayUntil
- *  para ceder CPU. Es lazo abierto y no hay RTC, asi que no se re-homea solo.
- *  Si AUN se reseteara: abre el Monitor Serie (115200) SIN el agente y lee el
- *  motivo que imprime el ESP32 al arrancar: "Stack canary..."=pila, "Brownout
- *  detector..."=fuente de servos debil (usa 5-6V externa, GND comun, cap 1000uF).
- *
- *  Juntas: 5 actuadores joint_1..joint_5 (sin el antiguo roll). joint_4 = pitch de
- *  muñeca (antiguo joint_5); joint_5 = GRIPPER.
- *
- *  Pipeline:
- *    /joint_command (Float32MultiArray, RADIANES [q1,q2,q3,q4, gripper]) -> objetivo
- *    tarea servo @50 Hz (perfil trapezoidal, writeMicroseconds) -> 5 servos FLUIDO
- *    5 potenciometros -> /joint_states (JointState, RADIANES) @25 Hz (para RViz)
+ *  Juntas: 5 actuadores joint_1..joint_5 (sin el antiguo roll). joint_4 = pitch
+ *  de muñeca (antiguo joint_5); joint_5 = GRIPPER.
  *
  *  PINES: SERVO {2,4,5,18,19}  POT {32,33,34,35,27}.  LED de estado: GPIO 13.
  *  (Si tu cableado de servos sigue en {2,4,5,19,21}, ajusta SERVO_PINS[].)
  * ==========================================================================*/
 
+// >>> Parche de ULTIMO RECURSO si el reset es por BROWNOUT y no puedes arreglar
+//     la alimentacion ya mismo. Pon 1 para desactivar el detector de brownout.
+//     OJO: es un band-aid; lo correcto es una fuente de servos externa 5-6V.
+#define DISABLE_BROWNOUT 0
+
 #include <math.h>
+#if DISABLE_BROWNOUT
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#endif
 
 #include <micro_ros_arduino.h>
 #include <ESP32Servo.h>
@@ -51,17 +49,16 @@
 #include <std_msgs/msg/float32_multi_array.h>
 
 #define STATUS_LED_PIN 13
-#define NUM_CH         5          // joint_1..joint_4 (brazo) + joint_5 (gripper)
+#define NUM_CH         5
 #define GRIPPER_INDEX  4
 
 const int SERVO_PINS[NUM_CH] = {  2,  4,  5, 18, 19 };
 const int POT_PINS[NUM_CH]   = { 32, 33, 34, 35, 27 };
-
 const char *JOINT_LABEL[NUM_CH] = { "joint_1", "joint_2", "joint_3", "joint_4", "joint_5" };
 
 // ===========================================================================
 //  MAPEO DE SERVO (grados). servo_deg = CENTER + DIR*q_deg, saturado a [0,180].
-//  SERVO_DIRECTION confirmado {1,-1,1,-1,1}. Si el gripper gira al reves, pon [4]=-1.
+//  Si el gripper (joint_5) gira al reves, pon SERVO_DIRECTION[4] = -1.
 // ===========================================================================
 const int   SERVO_DIRECTION[NUM_CH]  = {  1, -1,  1, -1,  1 };
 const float SERVO_CENTER_DEG[NUM_CH] = { 90, 90, 90, 90, 90 };
@@ -72,14 +69,12 @@ const int   SERVO_US_MAX = 2400;     // us a 180 grados
 
 // ===========================================================================
 //  FLUIDEZ: perfil trapezoidal por junta (grados/s, grados/s^2).
-//  MAX_VEL = velocidad de crucero (mas bajo = mas lento). MAX_ACC = suavidad del
-//  arranque/frenado (mas bajo = mas gradual). El gripper va un poco mas agil.
+//  MAX_VEL = crucero (mas bajo = mas lento). MAX_ACC = suavidad del arranque/frenado.
 // ===========================================================================
 // idx:                            j1     j2     j3     j4    j5(grip)
 const float MAX_VEL[NUM_CH] = {  70.0f, 70.0f, 70.0f, 70.0f, 120.0f };  // grados/s
 const float MAX_ACC[NUM_CH] = { 150.0f,150.0f,150.0f,150.0f, 300.0f };  // grados/s^2
-#define SERVO_TASK_HZ 50                        // 50 Hz = trama del servo
-const float SERVO_DT = 1.0f / (float)SERVO_TASK_HZ;
+#define SERVO_TICK_US 20000UL                   // 20 ms = 50 Hz (trama del servo)
 
 // ===========================================================================
 //  FEEDBACK de potenciometros (para /joint_states). TU CALIBRACION, sin cambios.
@@ -100,14 +95,12 @@ const float ALPHA = 0.15f;                      // filtro exponencial del ADC
 // ===========================================================================
 Servo servos[NUM_CH];
 
-// Objetivo COMPARTIDO entre nucleos (grados de junta). Escrito por micro-ROS
-// (command_callback, nucleo 1) y leido por la tarea de servo (nucleo 0).
-// float de 32 bits => escritura/lectura atomica en el ESP32.
-volatile float target_deg[NUM_CH];
-
-// Estado del perfil (solo lo usa la tarea de servo).
+// Perfil de movimiento (grados de junta). target_deg lo fija /joint_command.
+float target_deg[NUM_CH];
 float cur_deg[NUM_CH];
 float cur_vel[NUM_CH];
+int   last_us[NUM_CH];                 // ultimo PWM escrito (para escribir solo si cambia)
+unsigned long last_tick_us = 0;
 
 // Feedback
 float feedback_filtered[NUM_CH];
@@ -140,7 +133,7 @@ void error_loop() {
 
 float clampf(float x, float lo, float hi) { return x < lo ? lo : (x > hi ? hi : x); }
 
-// grados de junta q -> microsegundos PWM (float -> resolucion fina => fluido).
+// grados de junta q -> microsegundos PWM (float => resolucion fina => fluido).
 int deg_to_us(float q_deg, int i) {
   q_deg = clampf(q_deg, JOINT_MIN_DEG[i], JOINT_MAX_DEG[i]);
   float servo_deg = SERVO_CENTER_DEG[i] + SERVO_DIRECTION[i] * q_deg;
@@ -155,43 +148,32 @@ float adc_to_rad(int raw, int i) {
   return deg * DEG2RAD;
 }
 
-// ---------------------------------------------------------------------------
-//  TAREA DE SERVO (nucleo 0): perfil trapezoidal a 50 Hz EXACTOS => FLUIDO.
-// ---------------------------------------------------------------------------
-void servo_task(void *pv) {
-  (void)pv;
-  const TickType_t period = pdMS_TO_TICKS(1000 / SERVO_TASK_HZ);   // 20 ms
-  TickType_t last_wake = xTaskGetTickCount();
-  for (;;) {
-    for (int i = 0; i < NUM_CH; i++) {
-      float tgt = clampf(target_deg[i], JOINT_MIN_DEG[i], JOINT_MAX_DEG[i]);
-      float err = tgt - cur_deg[i];
-      if (fabsf(err) < 1e-4f) { cur_vel[i] = 0.0f; continue; }   // ya en el objetivo: mantiene
-      // Velocidad con la que aun puedo frenar a 0 justo en el objetivo:
+// Un paso del perfil trapezoidal por junta (FLUIDO). Escribe el servo solo si el
+// PWM cambia. Deteccion de cruce del objetivo => 0 overshoot, sin jitter.
+void update_servos(float dt) {
+  for (int i = 0; i < NUM_CH; i++) {
+    float tgt = clampf(target_deg[i], JOINT_MIN_DEG[i], JOINT_MAX_DEG[i]);
+    float err = tgt - cur_deg[i];
+    if (fabsf(err) > 1e-4f) {
       float v_stop = sqrtf(2.0f * MAX_ACC[i] * fabsf(err));
       float v_des  = (err >= 0.0f ? 1.0f : -1.0f) * fminf(MAX_VEL[i], v_stop);
-      // Rampa de aceleracion (arranque/frenado gradual => fluido):
       float dv = v_des - cur_vel[i];
-      float dvm = MAX_ACC[i] * SERVO_DT;
+      float dvm = MAX_ACC[i] * dt;
       if (dv >  dvm) dv =  dvm;
       if (dv < -dvm) dv = -dvm;
       cur_vel[i] += dv;
-      float next = cur_deg[i] + cur_vel[i] * SERVO_DT;
-      // Deteccion de cruce: si este paso ALCANZA o PASA el objetivo, fija exacto y
-      // para (elimina overshoot y micro-oscilacion residual).
-      if ((tgt - cur_deg[i]) * (tgt - next) <= 0.0f) {
-        cur_deg[i] = tgt; cur_vel[i] = 0.0f;
-      } else {
-        cur_deg[i] = next;
-      }
-      servos[i].writeMicroseconds(deg_to_us(cur_deg[i], i));
+      float next = cur_deg[i] + cur_vel[i] * dt;
+      if ((tgt - cur_deg[i]) * (tgt - next) <= 0.0f) { cur_deg[i] = tgt; cur_vel[i] = 0.0f; }
+      else                                             cur_deg[i] = next;
+    } else {
+      cur_vel[i] = 0.0f;
     }
-    vTaskDelayUntil(&last_wake, period);        // temporizacion EXACTA (sin jitter)
+    int us = deg_to_us(cur_deg[i], i);
+    if (us != last_us[i]) { servos[i].writeMicroseconds(us); last_us[i] = us; }
   }
 }
 
 // Callback de /joint_command (RADIANES [q1..q4, gripper]; acepta >=4).
-// Solo fija el OBJETIVO (grados); la tarea de servo lo alcanza fluido.
 void command_callback(const void *msgin) {
   const std_msgs__msg__Float32MultiArray *msg =
       (const std_msgs__msg__Float32MultiArray *)msgin;
@@ -200,7 +182,7 @@ void command_callback(const void *msgin) {
     if ((size_t)i < msg->data.size) {
       float q_deg = msg->data.data[i] * RAD2DEG;
       target_deg[i] = clampf(q_deg, JOINT_MIN_DEG[i], JOINT_MAX_DEG[i]);
-    }   // si no llega el gripper (size==4) conserva su objetivo anterior
+    }
   }
 }
 
@@ -251,6 +233,10 @@ void setup_command_msg() {
 }
 
 void setup() {
+#if DISABLE_BROWNOUT
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);    // desactiva el detector de brownout (band-aid)
+#endif
+
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(STATUS_LED_PIN, HIGH);
 
@@ -258,29 +244,21 @@ void setup() {
     position_data[i] = velocity_data[i] = effort_data[i] = 0.0;
     command_data[i] = 0.0f; feedback_filtered[i] = 0.0f;
     target_deg[i] = cur_deg[i] = cur_vel[i] = 0.0f;   // arranca en HOME, quieto
+    last_us[i] = -1;
   }
 
-  // Servos + posicion HOME
+  // Servos: attach + HOME, ESCALONADO para no pedir toda la corriente de golpe.
   ESP32PWM::allocateTimer(0); ESP32PWM::allocateTimer(1);
   ESP32PWM::allocateTimer(2); ESP32PWM::allocateTimer(3);
   for (int i = 0; i < NUM_CH; i++) {
     servos[i].setPeriodHertz(50);
     servos[i].attach(SERVO_PINS[i], SERVO_US_MIN, SERVO_US_MAX);
-    servos[i].writeMicroseconds(deg_to_us(0.0f, i));
+    last_us[i] = deg_to_us(0.0f, i);
+    servos[i].writeMicroseconds(last_us[i]);
+    delay(120);                                 // separa el arranque de cada servo
   }
-  delay(800);
+  delay(600);
 
-  // Lanza la TAREA DE SERVO. IMPORTANTE para que NO se resetee el ESP32:
-  //  - Pila 8192 (el perfil usa float sqrtf/fminf + libreria de servos; 4096 la
-  //    desbordaba -> "Stack canary watchpoint triggered (servo_task)" -> reset).
-  //  - Nucleo 1 (mismo que attach(): evita choques de LEDC entre nucleos y deja
-  //    el nucleo 0 libre para el sistema/watchdog IDLE0).
-  //  - Prioridad 3 (> loop): preempte a loop() cada 20 ms => temporizacion exacta
-  //    (fluida). Como usa vTaskDelayUntil, cede CPU: no starva al IDLE ni al WDT.
-  BaseType_t ok = xTaskCreatePinnedToCore(servo_task, "servo_task", 8192, NULL, 3, NULL, 1);
-  if (ok != pdPASS) error_loop();     // sin memoria para la tarea: avisa (no sigue a ciegas)
-
-  // micro-ROS (nucleo 1, en loop)
   Serial.begin(115200);
   set_microros_transports();
   while (rmw_uros_ping_agent(1000, 1) != RMW_RET_OK) {
@@ -311,11 +289,19 @@ void setup() {
   RCCHECK(rclc_executor_add_subscription(
       &executor, &joint_command_sub, &command_msg, &command_callback, ON_NEW_DATA));
 
+  last_tick_us = micros();
   digitalWrite(STATUS_LED_PIN, LOW);
 }
 
 void loop() {
-  // Nucleo 1: SOLO micro-ROS (comandos + feedback). El movimiento va en su tarea.
-  RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)));
+  // Paso del perfil suave cada 20 ms EXACTOS (por micros(), robusto a overflow).
+  unsigned long now = micros();
+  if (now - last_tick_us >= SERVO_TICK_US) {
+    float dt = (now - last_tick_us) * 1e-6f;
+    last_tick_us = now;
+    update_servos(dt);
+  }
+  // micro-ROS: recibe /joint_command y publica el feedback (spin corto).
+  RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1)));
   delay(1);   // cede CPU (evita reset por watchdog). NO quitar.
 }

@@ -21,14 +21,13 @@ servos y publica la realimentación de 5 potenciómetros.
 > radianes (REP-103). La conversión rad→grados ocurre **únicamente** en
 > `servo.write()`. La **calibración** se expresa en grados/ADC (lo intuitivo del HW).
 
-## Movimiento FLUIDO (tarea de tiempo real dedicada)
+## Movimiento FLUIDO (un solo hilo, sin FreeRTOS)
 El firmware **no** salta al objetivo cuando llega `/joint_command`: lo guarda y un
-**perfil trapezoidal por junta** (arranca/frena gradual) lo alcanza suave. Ese
-perfil corre en una **tarea FreeRTOS con temporización exacta** (50 Hz,
-`vTaskDelayUntil`) y **prioridad mayor que `loop()`**, así **preempta** al bucle
-cada 20 ms y queda **inmune al jitter de micro-ROS** → movimiento **fluido** (no
-"a pasitos"). Resolución fina en µs y **detección de cruce** del objetivo (0
-overshoot, sin jitter). Ajusta velocidad/suavidad por junta (**en grados**):
+**perfil trapezoidal por junta** (arranca/frena gradual) lo alcanza suave. Todo
+corre en **`loop()`** (sin tareas FreeRTOS), con el paso del perfil cada **20 ms
+exactos** por `micros()`. La fluidez viene de mover el servo con **pasos finos en
+microsegundos (float)**, no en saltos de 1°, con **detección de cruce** del
+objetivo (0 overshoot, sin jitter). Ajusta por junta (**en grados**):
 ```cpp
 const float MAX_VEL[NUM_CH] = {  70,  70,  70,  70, 120 };   // grados/s (crucero)
 const float MAX_ACC[NUM_CH] = { 150, 150, 150, 150, 300 };   // grados/s² (suavidad)
@@ -37,13 +36,13 @@ const float MAX_ACC[NUM_CH] = { 150, 150, 150, 150, 300 };   // grados/s² (suav
 - Más **rápido** → sube `MAX_VEL`; un `MAX_ACC` bajo = arranque/frenado más sedoso.
 
 ### ¿Se resetea el ESP32?
-La tarea de servo necesita **pila suficiente**: se crea con **8192 bytes**. Con
-4096 se desbordaba (float `sqrtf` + librería de servos) → *"Stack canary watchpoint
-triggered (servo_task)"* → **reset**. Va en el **núcleo 1** (deja el 0 libre para el
-sistema) y cede CPU con `vTaskDelayUntil` (no dispara el watchdog). Para ver el
-motivo de un reset: abre el **Monitor Serie a 115200 SIN el agente** y lee el
-mensaje al arrancar (`Stack canary…` = pila; `Brownout detector…` = fuente de
-servos débil → usa **fuente externa 5–6 V**, **GND común**, **cap 1000 µF+**).
+Esta versión **quita la tarea FreeRTOS** (que era la que introducía el reset) y
+corre en un solo hilo, como tus versiones que nunca se reseteaban. Si AÚN se
+resetea, es **BROWNOUT** (la fuente no aguanta la corriente de los servos).
+Confírmalo: **Monitor Serie 115200 SIN el agente**; al arrancar imprime el motivo
+(`Brownout detector was triggered`). Arreglo de raíz: **fuente externa 5–6 V** para
+los servos (no desde el ESP32/USB), **GND común**, **condensador 1000 µF+**. Parche
+temporal: `#define DISABLE_BROWNOUT 1` en el `.ino` (band-aid, no sustituye la fuente).
 
 ## Pines (5 canales) — reasignados tras quitar el roll
 | Canal | Junta | Servo (PWM) | Pot (ADC) |
