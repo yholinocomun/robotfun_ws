@@ -17,6 +17,8 @@ CÓMO AÑADIR / EDITAR PUNTOS
 2. Añádelo a la lista SECUENCIA como una tupla:  ("nombre", WAYPOINT, espera_seg).
    'espera_seg' es el tiempo que se espera tras mandarlo (deja margen para que el
    brazo llegue; los giros grandes de joint_1 tardan más).
+3. Para una PAUSA (esperar sin mover, p. ej. antes de agarrar/soltar) usa None
+   como waypoint:  ("PAUSA", None, 2.0).
 
 Parámetros ROS
 --------------
@@ -60,17 +62,21 @@ PLACE_UP   = [-1.57, 1.00, 1.10, -0.70, GRIP_OPEN]    # sube ya sin el objeto
 #  SECUENCIA  =  ("nombre", waypoint, espera_segundos)
 #  El orden es el que se ejecuta. Añade/quita filas a tu gusto.
 # ===========================================================================
+#  Nota: un waypoint = None es una PAUSA (solo espera, no mueve el brazo). Úsalo
+#  para dejar ver bien cada acción (p. ej. antes de agarrar / soltar).
 SECUENCIA = [
-    ("HOME",             HOME,       2.0),
-    ("PICK · encima",    PICK_OVER,  2.5),
-    ("PICK · bajar",     PICK_DOWN,  2.0),
-    ("PICK · AGARRAR",   PICK_GRASP, 1.5),
-    ("PICK · levantar",  PICK_LIFT,  2.0),
-    ("PLACE · encima",   PLACE_OVER, 4.0),   # giro grande de joint_1 (+90° -> -90°)
-    ("PLACE · bajar",    PLACE_DOWN, 2.0),
-    ("PLACE · SOLTAR",   PLACE_REL,  1.5),
-    ("PLACE · subir",    PLACE_UP,   2.0),
-    ("HOME",             HOME,       3.0),
+    ("HOME",                 HOME,       2.0),
+    ("PICK · encima",        PICK_OVER,  2.5),
+    ("PICK · bajar",         PICK_DOWN,  2.0),
+    ("PAUSA · antes agarrar", None,      2.0),   # espera ~2 s para verlo mejor
+    ("PICK · AGARRAR",       PICK_GRASP, 1.5),
+    ("PICK · levantar",      PICK_LIFT,  2.0),
+    ("PLACE · encima",       PLACE_OVER, 4.0),   # giro grande de joint_1 (+90° -> -90°)
+    ("PLACE · bajar",        PLACE_DOWN, 2.0),
+    ("PAUSA · antes soltar",  None,      2.0),   # espera ~2 s para verlo mejor
+    ("PLACE · SOLTAR",       PLACE_REL,  1.5),
+    ("PLACE · subir",        PLACE_UP,   2.0),
+    ("HOME",                 HOME,       3.0),
 ]
 
 N_JOINTS = 5
@@ -115,8 +121,11 @@ class PickPlaceNode(Node):
                 for name, wp, dwell in SECUENCIA:
                     if not rclpy.ok():
                         break
-                    self.get_logger().info(f"  → {name:16s} {wp}")
-                    self.send(wp)
+                    if wp is None:                     # PAUSA: solo espera, no mueve
+                        self.get_logger().info(f"  ⏸  {name}  ({dwell:.1f}s)")
+                    else:
+                        self.get_logger().info(f"  →  {name:20s} {wp}")
+                        self.send(wp)
                     self._sleep(dwell * self.speed)
             self.get_logger().info("Secuencia terminada.")
         except KeyboardInterrupt:
